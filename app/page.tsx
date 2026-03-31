@@ -51,7 +51,7 @@ export default function Home() {
     "",
   );
   const [files, setFiles] = useState<File[]>([]);
-  const [results, setResults] = useState<ScreeningResponse | null>({});
+  const [results, setResults] = useState<ScreeningResponse | null>(null);
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState({ current: 0, stage: "" });
   const [expandedId, setExpandedId] = useState<string | null>(null);

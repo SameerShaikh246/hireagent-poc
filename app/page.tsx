@@ -319,7 +319,38 @@ export default function Home() {
                           <p className="text-[12px] text-(--text-secondary) leading-relaxed mb-3">
                             {c.aiAssessment.explanation}
                           </p>
-
+                          <div className="grid grid-cols-2 gap-[10px] mb-3">
+                            <div>
+                              <div className="text-[11px] font-semibold text-(--success) mb-[6px]">✓ Strengths</div>
+                              {c.aiAssessment.strengths.map((s, i) => (
+                                <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">
+                                  {s}
+                                </div>
+                              ))}
+                            </div>
+                            <div>
+                              <div className="text-[11px] font-semibold text-(--danger) mb-[6px]">✗ Gaps</div>
+                              {c.aiAssessment.gaps.map((g, i) => (
+                                <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">{g}</div>
+                              ))}
+                            </div>
+                          </div>
+                          {(c.aiAssessment.whySelect || c.aiAssessment.whyNotSelect) && (
+                            <div className="grid grid-cols-2 gap-[10px]">
+                              {c.aiAssessment.whySelect && (
+                                <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-[6px] p-[10px_12px]">
+                                  <div className="text-[11px] font-bold text-(--success) mb-[5px]">👍 Why Select</div>
+                                  <p className="text-[11px] text-[#166534] leading-snug">{c.aiAssessment.whySelect}</p>
+                                </div>
+                              )}
+                              {c.aiAssessment.whyNotSelect && (
+                                <div className="bg-[#fff7ed] border border-[#fed7aa] rounded-[6px] p-[10px_12px]">
+                                  <div className="text-[11px] font-bold text-[#c2410c] mb-[5px]">👎 Why Not Select</div>
+                                  <p className="text-[11px] text-[#9a3412] leading-snug">{c.aiAssessment.whyNotSelect}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -332,7 +363,7 @@ export default function Home() {
 
           <p className="text-center text-[11px] text-(--text-muted) mt-6">
             Processed {results.totalResumes} resumes ·{" "}
-            {new Date(results.processedAt).toLocaleString()}
+            {new Date(results.processedAt).toLocaleString("en-IN")}
           </p>
         </div>
       </div>

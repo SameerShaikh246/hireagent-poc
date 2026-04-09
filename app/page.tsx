@@ -46,10 +46,8 @@ const ScoreBar = ({
 
 export default function Home() {
   const [view, setView] = useState<View>("setup");
-  const [jd, setJd] = useState(``);
-  const [apiKey, setApiKey] = useState(
-    "",
-  );
+  const [jd, setJd] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [results, setResults] = useState<ScreeningResponse | null>(null);
   const [error, setError] = useState("");
@@ -96,6 +94,7 @@ export default function Home() {
         body: formData,
       });
       clearInterval(interval);
+
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || "Request failed");
@@ -118,11 +117,9 @@ export default function Home() {
   };
 
   // RESULTS VIEW
-  if ((view === "results" && results)) {
-    console.log("results :", results);
-
+  if (view === "results" && results) {
     const shortlisted = results.candidates.filter((c) =>
-      ["Strong Yes", "Yes"].includes(c.aiAssessment.recommendation),
+      ["Strong Yes", "Yes"].includes(c.aiAssessment.recommendation)
     );
     return (
       <div className="min-h-screen bg-(--bg)">
@@ -228,8 +225,7 @@ export default function Home() {
                         {c.ruleScore.experienceYears > 0
                           ? `${c.ruleScore.experienceYears} yrs exp · `
                           : ""}
-                        {c.ruleScore.matchedSkills.slice(0, 3).join(", ") ||
-                          "No skills matched"}
+                        {c.ruleScore.matchedSkills.slice(0, 3).join(", ") || "No skills matched"}
                       </div>
                     </div>
 
@@ -247,9 +243,7 @@ export default function Home() {
                       >
                         {c.finalScore}
                       </div>
-                      <div className="text-[10px] text-(--text-muted)">
-                        / 100
-                      </div>
+                      <div className="text-[10px] text-(--text-muted)">/ 100</div>
                     </div>
 
                     <span
@@ -279,39 +273,49 @@ export default function Home() {
                             Score Breakdown
                           </div>
                           {[
-                            {
-                              label: "Skill Match",
-                              value: c.ruleScore.skillScore,
-                              max: 40,
-                              color: "#3b82f6",
-                            },
-                            {
-                              label: "Experience",
-                              value: c.ruleScore.experienceScore,
-                              max: 30,
-                              color: "#8b5cf6",
-                            },
-                            { label: 'Education', value: c.ruleScore.educationScore, max: 30, color: '#f59e0b' },
-                            { label: 'Role Fit', value: c.aiAssessment.roleFitScore, max: 100, color: '#10b981' },
+                            { label: "Skill Match", value: c.ruleScore.skillScore, max: 40, color: "#3b82f6" },
+                            { label: "Experience", value: c.ruleScore.experienceScore, max: 30, color: "#8b5cf6" },
+                            { label: "Education", value: c.ruleScore.educationScore, max: 30, color: "#f59e0b" },
+                            { label: "Role Fit (AI)", value: c.aiAssessment.roleFitScore, max: 100, color: "#10b981" },
                           ].map((s) => (
                             <div key={s.label} className="mb-[10px]">
                               <div className="flex justify-between text-[12px] mb-1">
-                                <span className="text-(--text-secondary)">
-                                  {s.label}
-                                </span>
+                                <span className="text-(--text-secondary)">{s.label}</span>
                                 <span className="font-semibold text-(--text-primary)">
                                   {s.value}/{s.max}
                                 </span>
                               </div>
-                              <ScoreBar
-                                value={s.value}
-                                max={s.max}
-                                color={s.color}
-                              />
+                              <ScoreBar value={s.value} max={s.max} color={s.color} />
                             </div>
                           ))}
+                          {c.ruleScore.matchedSkills.length > 0 && (
+                            <div className="mt-[14px] pt-[14px] border-t border-(--border)">
+                              <div className="text-[11px] font-semibold text-(--text-muted) mb-1">Matched JD Skills</div>
+                              <div className="flex flex-wrap gap-[6px]">
+                                {c.ruleScore.matchedSkills.map(s => (
+                                  <span key={s} className="text-[11px] px-2 py-[3px] bg-(--accent-light) text-(--accent) rounded-full border border-[#bfdbfe]">
+                                    {s}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {/* Missing skills */}
+                          {c.ruleScore.missingSkills.length > 0 && (
+                            <div className="mt-3">
+                              <div className="text-[11px] font-semibold text-(--text-muted) mb-1">Missing JD Skills</div>
+                              <div className="flex flex-wrap gap-1">
+                                {c.ruleScore.missingSkills.slice(0, 8).map((s) => (
+                                  <span key={s} className="text-[10px] bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5] rounded-full px-2 py-0.5">
+                                    {s}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
 
+                        {/* AI Assessment */}
                         <div>
                           <div className="text-[12px] font-semibold text-(--text-secondary) mb-3 uppercase tracking-[0.05em]">
                             AI Assessment
@@ -331,7 +335,9 @@ export default function Home() {
                             <div>
                               <div className="text-[11px] font-semibold text-(--danger) mb-[6px]">✗ Gaps</div>
                               {c.aiAssessment.gaps.map((g, i) => (
-                                <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">{g}</div>
+                                <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">
+                                  {g}
+                                </div>
                               ))}
                             </div>
                           </div>
@@ -353,7 +359,6 @@ export default function Home() {
                           )}
                         </div>
                       </div>
-
                     </div>
                   )}
                 </div>
@@ -393,7 +398,6 @@ export default function Home() {
   // SETUP VIEW
   return (
     <div className="min-h-screen bg-(--bg)">
-      {/* Header */}
       <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center gap-3">
         <span className="text-lg">
           <Image src="/icons/robot.svg" alt="Logo" width={40} height={40} />
@@ -413,9 +417,9 @@ export default function Home() {
           <h1 className="text-3xl font-bold mb-2 text-(--text-primary)">
             Screen Resume Instantly
           </h1>
-          <p className="text-(--text-secondary) max-w-[400px] text-sm mx-auto">
-            Upload upto 20 resumes and a job description. A 3-agent AI pipeline
-            will parse, score and rank candidates automatically.
+          <p className="text-(--text-secondary) max-w-[440px] text-sm mx-auto">
+            Upload up to 20 resumes and a job description. A 5-agent AI pipeline
+            will analyse, parse, score, justify and rank candidates automatically.
           </p>
 
           <div className="flex gap-2 justify-center mt-4 flex-wrap">
@@ -439,7 +443,7 @@ export default function Home() {
                 >
                   {b.icon} {b.label}
                 </span>
-              ),
+              )
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import JSZip from "jszip";
 
 interface Props {
   files: File[];
@@ -12,23 +13,67 @@ export default function ResumeUploader({ files, onChange, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
-  const addFiles = (incoming: FileList | null) => {
+
+  const addFiles = async (incoming: FileList | null) => {
     if (!incoming) return;
+
     const allowed = [
       "application/pdf",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "text/plain",
+      "application/zip",
+      "application/x-zip-compressed",
     ];
 
-    const valid = Array.from(incoming).filter(
-      (f) =>
-        allowed.includes(f.type) ||
-        f.name.endsWith(".txt") ||
-        f.name.endsWith(".pdf") ||
-        f.name.endsWith(".docx"),
-    );
+    const isValidFile = (f: File) =>
+      allowed.includes(f.type) ||
+      f.name.endsWith(".txt") ||
+      f.name.endsWith(".pdf") ||
+      f.name.endsWith(".docx") ||
+      f.name.endsWith(".zip");
 
-    const combined = [...files, ...valid].slice(0, 20);
+    const newFiles: File[] = [];
+
+    for (const file of Array.from(incoming)) {
+
+      if (!isValidFile(file)) continue;
+
+      // Handle ZIP separately
+      if (file.name.endsWith(".zip")) {
+        try {
+          const zip = await JSZip.loadAsync(file);
+
+          for (const filename of Object.keys(zip.files)) {
+            const entry = zip.files[filename];
+
+            if (entry.dir) continue;
+
+            // Validate files inside ZIP
+            const isValidInside =
+              filename.endsWith(".pdf") ||
+              filename.endsWith(".docx") ||
+              filename.endsWith(".txt");
+
+            if (!isValidInside) continue;
+
+            const blob = await entry.async("blob");
+
+            const extractedFile = new File([blob], filename, {
+              type: blob.type || "application/octet-stream",
+            });
+
+            newFiles.push(extractedFile);
+          }
+        } catch (err) {
+          console.error("Error reading zip:", err);
+        }
+      } else {
+        newFiles.push(file);
+      }
+    }
+
+    const combined = [...files, ...newFiles].slice(0, 20);
+
     const deduped = combined.filter(
       (f, i, arr) => arr.findIndex((x) => x.name === f.name) === i,
     );
@@ -120,7 +165,7 @@ export default function ResumeUploader({ files, onChange, disabled }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.docx,.txt"
+        accept=".pdf,.docx,.txt,.zip"
         multiple
         className="hidden"
         onChange={(e) => addFiles(e.target.files)}

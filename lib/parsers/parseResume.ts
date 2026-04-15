@@ -1,54 +1,60 @@
-import { ParsedResume } from "@/types";
+import type { ParsedResume } from "@/types";
 import normalizeResumeText from "./normalizeText";
+import crypto from "crypto";
 
-// ─── PARSE AGENT ─────────────────────────────────────────────────────────────
+function hashContent(text: string): string {
+  return crypto.createHash("sha256").update(text.trim().toLowerCase()).digest("hex").slice(0, 16);
+}
+
 async function parseAgent(file: File): Promise<ParsedResume> {
-  const name = file.name.toLocaleLowerCase();
+  const name = file.name.toLowerCase();
 
   if (name.endsWith(".txt")) {
-    const text = await file.text(); 
-
+    const text = await file.text();
+    const normalized = normalizeResumeText(text);
     return {
       fileName: file.name,
-      rawText: normalizeResumeText(text),
+      rawText: normalized,
       parseMethod: "plain-text",
+      contentHash: hashContent(normalized),
     };
   }
 
   if (name.endsWith(".pdf")) {
-    // Primary: unpdf (handles multi-column layouts and ligatures better than pdf-parse)
     try {
       const arrayBuffer = await file.arrayBuffer();
       const { extractText } = await import("unpdf");
-      const { text } = await extractText(new Uint8Array(arrayBuffer), {
-        mergePages: true,
-      });
+      const { text } = await extractText(new Uint8Array(arrayBuffer), { mergePages: true });
+      const normalized = normalizeResumeText(text);
       return {
         fileName: file.name,
-        rawText: normalizeResumeText(text),
+        rawText: normalized,
         parseMethod: "unpdf",
+        contentHash: hashContent(normalized),
       };
-    } catch (unpdfErr) {
+      } catch (unpdfErr) {
       console.warn("unpdf failed, falling back to pdf-parse:", unpdfErr);
     }
 
-    // Fallback: pdf-parse
     try {
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const pdfParseModule = await import("pdf-parse");
       const pdfParse = (pdfParseModule as any).default || pdfParseModule;
       const result = await pdfParse(buffer);
+      const normalized = normalizeResumeText(result.text);
       return {
         fileName: file.name,
-        rawText: normalizeResumeText(result.text),
+        rawText: normalized,
         parseMethod: "pdf-parse-fallback",
+        contentHash: hashContent(normalized),
       };
     } catch {
       return {
         fileName: file.name,
         rawText: "[PDF parse failed - scanned or encrypted]",
-        parseMethod: "ai-fallback",
+        parseMethod: "failed",
+        contentHash: hashContent(file.name),
       };
     }
   }
@@ -59,20 +65,29 @@ async function parseAgent(file: File): Promise<ParsedResume> {
       const buffer = Buffer.from(arrayBuffer);
       const mammoth = await import("mammoth");
       const result = await mammoth.extractRawText({ buffer });
+      const normalized = normalizeResumeText(result.value);
       return {
         fileName: file.name,
-        rawText: normalizeResumeText(result.value),
+        rawText: normalized,
         parseMethod: "mammoth",
+        contentHash: hashContent(normalized),
       };
     } catch {
       return {
         fileName: file.name,
         rawText: "[DOCX parse failed]",
-        parseMethod: "ai-fallback",
+        parseMethod: "failed",
+        contentHash: hashContent(file.name),
       };
     }
   }
 
-  return { fileName: file.name, rawText: "", parseMethod: "ai-fallback" };
+  return {
+    fileName: file.name,
+    rawText: "",
+    parseMethod: "unsupported",
+    contentHash: hashContent(file.name),
+  };
 }
+
 export default parseAgent;

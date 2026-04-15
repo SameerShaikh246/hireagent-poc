@@ -3,14 +3,20 @@ import type {
   RuleBasedScore,
   AIAssessment,
   CandidateResult,
+  RoleType,
+  EducationLevel,
 } from "@/types";
 import { NextRequest, NextResponse } from "next/server";
 import { groqGenerate } from "@/lib/groq";
 import parseAgent from "@/lib/parsers/parseResume";
 import { skillPresentInText } from "@/lib/scoring/skillMatcher";
+import { jdIntelligenceAgent } from "@/lib/agents/jdIntelligenceAgent";
 
 // SKILL EXTRACTION
-async function extractSkillsFromJD(jd: string, apiKey: string): Promise<string[]> {
+async function extractSkillsFromJD(
+  jd: string,
+  apiKey: string,
+): Promise<string[]> {
   const prompt = `You are a technical recruiter assistant. Extract ONLY the technical skills, tools, frameworks, and technologies that are explicitly mentioned in the job description below.
 
 Rules:
@@ -26,17 +32,17 @@ JOB DESCRIPTION:
 ${jd.slice(0, 2000)}`;
 
   try {
-    const raw = await groqGenerate( prompt, {
-    apiKey,
-    maxTokens: 512,
-  });
-    const cleaned = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+    const raw = await groqGenerate(prompt, { apiKey, maxTokens: 512 });
 
+    const cleaned = raw
+      .replace(/```(?:json)?\s*/gi, "")
+      .replace(/```/g, "")
+      .trim();
     const match = cleaned.match(/\[[\s\S]*\]/);
-    if (!match) throw new Error("No JSON array in skill extraction response");
+    if (!match) throw new Error("No JSON array");
 
     const parsed: unknown = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) throw new Error("Parsed value is not an array");
+    if (!Array.isArray(parsed)) throw new Error("Not array");
 
     return parsed
       .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
@@ -47,7 +53,7 @@ ${jd.slice(0, 2000)}`;
   }
 }
 
-// SCORE AGENT 
+// SCORE AGENT
 function extractExperienceYearsFromText(text: string): number {
   const patterns = [
     /(\d+)\+?\s*years?\s+(?:of\s+)?(?:experience|exp)/gi,
@@ -65,23 +71,12 @@ function extractExperienceYearsFromText(text: string): number {
 
 function detectEducation(text: string): number {
   const t = text.toLowerCase();
-  if (t.includes("phd") || t.includes("doctorate") || t.includes("ph.d")) return 30;
-  if (
-    t.includes("master") ||
-    t.includes("m.s") ||
-    t.includes("mba") ||
-    t.includes("m.tech")
-  )
+  if (t.includes("phd")) return 30;
+  if (t.includes("master") || t.includes("mba") || t.includes("m.tech"))
     return 25;
-  if (
-    t.includes("bachelor") ||
-    t.includes("b.s") ||
-    t.includes("b.e") ||
-    t.includes("b.tech") ||
-    t.includes("degree")
-  )
+  if (t.includes("bachelor") || t.includes("b.tech") || t.includes("degree"))
     return 20;
-  if (t.includes("diploma") || t.includes("associate")) return 12;
+  if (t.includes("diploma")) return 12;
   return 5;
 }
 
@@ -89,11 +84,16 @@ function scoreAgent(
   resume: ParsedResume,
   jdSkills: string[],
   jdText: string,
+  requiredYearsOverride?: number,
 ): RuleBasedScore {
   const text = resume.rawText.toLowerCase();
 
-  const matchedSkills = jdSkills.filter((skill) => skillPresentInText(skill, text));
-  const missingSkills = jdSkills.filter((skill) => !matchedSkills.includes(skill));
+  const matchedSkills = jdSkills.filter((skill) =>
+    skillPresentInText(skill, text),
+  );
+  const missingSkills = jdSkills.filter(
+    (skill) => !matchedSkills.includes(skill),
+  );
 
   const skillScore =
     jdSkills.length > 0
@@ -101,8 +101,12 @@ function scoreAgent(
       : 20;
 
   const requiredYearsMatch = jdText.match(/(\d+)\+?\s*years?/i);
-  const requiredYears = requiredYearsMatch ? parseInt(requiredYearsMatch[1]) : 3;
+  const requiredYears =
+    requiredYearsOverride ??
+    (requiredYearsMatch ? parseInt(requiredYearsMatch[1]) : 3);
+
   const candidateYears = extractExperienceYearsFromText(resume.rawText);
+
   let experienceScore = 0;
   if (candidateYears >= requiredYears) experienceScore = 30;
   else if (candidateYears >= requiredYears - 1) experienceScore = 22;
@@ -123,12 +127,11 @@ function scoreAgent(
   };
 }
 
-// JUSTIFY AGENT
 async function justifyAgent(
   resume: ParsedResume,
   ruleScore: RuleBasedScore,
   jd: string,
-  apiKey?: string,
+  apiKey: string,
 ): Promise<AIAssessment> {
   const prompt = `You are a senior technical recruiter. Evaluate this candidate's resume strictly against the job description below.
 
@@ -164,8 +167,10 @@ Required JSON shape:
 }`;
 
   try {
-    const rawText = await groqGenerate(prompt, {apiKey,maxTokens:1000});
+    const rawText = await groqGenerate(prompt, { apiKey, maxTokens: 1000 });
 
+    if (!rawText) throw new Error("Empty response from AI");
+  
     const jsonStr = rawText
       .replace(/```(?:json)?\s*/gi, "")
       .replace(/```/g, "")
@@ -173,21 +178,29 @@ Required JSON shape:
 
     const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
     if (!jsonMatch)
-      throw new Error(`No JSON object found in response: ${rawText.slice(0, 200)}`);
+      throw new Error(
+        `No JSON object found in response: ${rawText.slice(0, 200)}`,
+      );
 
     const parsed = JSON.parse(jsonMatch[0]);
-    const roleFitScore = Math.min(100, Math.max(0, Number(parsed.roleFitScore) || 50));
+    const roleFitScore = Math.min(
+      100,
+      Math.max(0, Number(parsed.roleFitScore) || 50),
+    );
     const overallScore = Math.round(ruleScore.total * 0.4 + roleFitScore * 0.6);
-0
     return {
       roleFitScore,
       overallScore,
-      strengths: Array.isArray(parsed.strengths) ? parsed.strengths.slice(0, 3) : [],
+      strengths: Array.isArray(parsed.strengths)
+        ? parsed.strengths.slice(0, 3)
+        : [],
       gaps: Array.isArray(parsed.gaps) ? parsed.gaps.slice(0, 3) : [],
       explanation: String(parsed.explanation || ""),
       whySelect: String(parsed.whySelect || ""),
       whyNotSelect: String(parsed.whyNotSelect || ""),
-      recommendation: ["Strong Yes", "Yes", "Maybe", "No"].includes(parsed.recommendation)
+      recommendation: ["Strong Yes", "Yes", "Maybe", "No"].includes(
+        parsed.recommendation,
+      )
         ? parsed.recommendation
         : "Maybe",
     };
@@ -212,7 +225,8 @@ Required JSON shape:
         ruleScore.experienceYears === 0
           ? "Years of experience could not be verified from the resume."
           : "AI assessment failed; manual review required to verify JD fit.",
-      recommendation: ruleScore.total >= 70 ? "Yes" : ruleScore.total >= 50 ? "Maybe" : "No",
+      recommendation:
+        ruleScore.total >= 70 ? "Yes" : ruleScore.total >= 50 ? "Maybe" : "No",
     };
   }
 }
@@ -226,22 +240,73 @@ export async function POST(req: NextRequest) {
     const files = formData.getAll("resumes") as File[];
 
     if (!jd || jd.trim().length < 20)
-      return NextResponse.json({ error: "Job description is too short." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Job description is too short." },
+        { status: 400 },
+      );
     if (!apiKey || apiKey.trim().length < 10)
-      return NextResponse.json({ error: "Groq API key is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Groq API key is required." },
+        { status: 400 },
+      );
     if (!files || files.length === 0)
-      return NextResponse.json({ error: "No resume files uploaded." }, { status: 400 });
+      return NextResponse.json(
+        { error: "No resume files uploaded." },
+        { status: 400 },
+      );
+    const jdMode = (formData.get("jdMode") as string) ?? "freetext";
 
-    // Extract skills from JD ONCE (single API call before the loop)
-    const jdSkills = await extractSkillsFromJD(jd, apiKey);
-    console.log("AI-extracted JD skills:", jdSkills);
+    let structuredInput = null;
+
+    if (jdMode === "structured") {
+      try {
+        structuredInput = {
+          title: (formData.get("title") as string) ?? "",
+          roleType: (formData.get("roleType") as RoleType) ?? "technical",
+          mustHaveSkills: JSON.parse(
+            (formData.get("mustHaveSkills") as string) ?? "[]",
+          ),
+          niceToHaveSkills: JSON.parse(
+            (formData.get("niceToHaveSkills") as string) ?? "[]",
+          ),
+          experienceRange: {
+            min: parseInt((formData.get("experienceMin") as string) ?? "3", 10),
+            max: parseInt((formData.get("experienceMax") as string) ?? "6", 10),
+          },
+          educationRequired:
+            ((
+              formData.get("educationRequired") as string
+            )?.toLowerCase() as EducationLevel) ?? "bachelor",
+          responsibilities: (formData.get("responsibilities") as string) ?? "",
+        };
+      } catch {
+        structuredInput = null;
+      }
+    }
+    const jdIntel = await jdIntelligenceAgent(jd, structuredInput, apiKey);
+    console.log("JD Intelligence:", jdIntel);
+
+    let jdSkills = await extractSkillsFromJD(jd, apiKey);
+
+    if (jdIntel.mustHaveSkills.length > 0) {
+      jdSkills = jdIntel.mustHaveSkills;
+    }
+
+    console.log("Final JD skills:", jdSkills);
 
     const candidates: CandidateResult[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const parsed = await parseAgent(file);
-      const ruleScore = scoreAgent(parsed, jdSkills, jd);
+
+      const ruleScore = scoreAgent(
+        parsed,
+        jdSkills,
+        jd,
+        jdIntel.correctedExperienceRange?.min,
+      );
+
       const aiAssessment = await justifyAgent(parsed, ruleScore, jd, apiKey);
 
       candidates.push({
@@ -266,12 +331,16 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       candidates,
+      jdIntelligence: jdIntel,
       processedAt: new Date().toISOString(),
       totalResumes: files.length,
     });
   } catch (err: unknown) {
     console.error("Screening error:", err);
     const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: `Screening failed: ${message}` }, { status: 500 });
+    return NextResponse.json(
+      { error: `Screening failed: ${message}` },
+      { status: 500 },
+    );
   }
 }

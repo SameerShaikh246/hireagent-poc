@@ -1,12 +1,10 @@
-// SKILL ALIAS MAP
-// Maps canonical skill name -> known PDF/resume variants
 export const SKILL_ALIASES: Record<string, string[]> = {
+  javascript: ["js", "javascript", "ecmascript", "es6", "es2015"],
+  typescript: ["ts", "typescript"],
   react: ["reactjs", "react.js", "react js"],
   node: ["nodejs", "node.js", "node js"],
   "next.js": ["nextjs", "next js", "next"],
   vue: ["vuejs", "vue.js", "vue js"],
-  typescript: ["ts", "type script"],
-  javascript: ["js", "java script"],
   postgresql: ["postgres", "psql", "pg"],
   mongodb: ["mongo", "mongo db"],
       graphql: ["graph ql", "graph-ql"],

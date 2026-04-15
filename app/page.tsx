@@ -1,10 +1,18 @@
 "use client";
 import { useState } from "react";
 import Image from "next/image";
-import type { CandidateResult, ScreeningResponse } from "@/types";
-import JobDescriptionForm from "@/components/JobDescriptionForm";
+import type { CandidateResult, JDMode, ScreeningResponse, StructuredJD } from "@/types";
+import JobDescriptionForm, { buildJDText } from "@/components/JobDescriptionForm";
 import ResumeUploader from "@/components/ResumeUploader";
 import ProcessingScreen from "@/components/ProcessingScreen";
+import {
+  BarChart3,
+  Trophy,
+  CheckCircle,
+  ClipboardList,
+} from "lucide-react";
+import JDIntelligencePanel from "@/components/JDIntelligencePanel";
+import Header from "@/components/Header";
 
 type View = "setup" | "processing" | "results";
 
@@ -46,15 +54,32 @@ const ScoreBar = ({
 
 export default function Home() {
   const [view, setView] = useState<View>("setup");
-  const [jd, setJd] = useState("");
+  const [jdMode, setJdMode] = useState<JDMode>("structured");
   const [apiKey, setApiKey] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [results, setResults] = useState<ScreeningResponse | null>(null);
   const [error, setError] = useState("");
   const [processing, setProcessing] = useState({ current: 0, stage: "" });
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [structuredJD, setStructuredJD] = useState<StructuredJD>({
+    title: "",
+    department: "",
+    roleType: "technical",
+    employmentType: "full-time",
+    mustHaveSkills: [],
+    niceToHaveSkills: [],
+    responsibilities: "",
+    experienceRange: { min: 3, max: 6 },
+    educationRequired: "bachelor",
+  });
+  const [freeTextJD, setFreeTextJD] = useState("");
+
   const canSubmit =
-    jd.trim().length >= 20 && files.length > 0 && apiKey.trim().length > 10;
+    files.length > 0 &&
+    apiKey.trim().length > 10 &&
+    (jdMode === "freetext"
+      ? freeTextJD.trim().length >= 20
+      : structuredJD.title.trim().length > 0 && structuredJD.mustHaveSkills.length > 0);
 
   const runScreening = async () => {
     setError("");
@@ -62,7 +87,17 @@ export default function Home() {
     setProcessing({ current: 0, stage: "Initializing pipeline…" });
 
     const formData = new FormData();
-    formData.append("jobDescription", jd);
+    const jdText = jdMode === "structured" ? buildJDText(structuredJD) : freeTextJD;
+    formData.append("jobDescription", jdText);
+    formData.append("jdMode", jdMode);
+    if (jdMode === "structured") {
+      formData.append("mustHaveSkills", JSON.stringify(structuredJD.mustHaveSkills));
+      formData.append("niceToHaveSkills", JSON.stringify(structuredJD.niceToHaveSkills));
+      formData.append("roleType", structuredJD.roleType);
+      formData.append("experienceMin", String(structuredJD.experienceRange.min));
+      formData.append("experienceMax", String(structuredJD.experienceRange.max));
+      formData.append("educationRequired", structuredJD.educationRequired);
+    }
     formData.append("apiKey", apiKey);
     files.forEach((f) => formData.append("resumes", f));
 
@@ -124,21 +159,7 @@ export default function Home() {
     return (
       <div className="min-h-screen bg-(--bg)">
         {/* Header */}
-        <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl">🤖</span>
-            <span className="font-bold text-[15px]">HireAgent</span>
-            <span className="text-xs text-(--text-muted) bg-(--bg) px-2 py-0.5 rounded-full border border-(--border)">
-              Results
-            </span>
-          </div>
-          <button
-            onClick={reset}
-            className="text-[13px] text-(--accent) bg-(--accent-light) border border-[#bfdbfe] rounded-(--radius) px-[14px] py-[6px] cursor-pointer font-medium"
-          >
-            ← New Screening
-          </button>
-        </header>
+        <Header showBack onBack={reset} />
         <h1 className="text-2xl font-bold text-(--text-primary) mb-6 p-4">
           Results screening
         </h1>
@@ -150,18 +171,22 @@ export default function Home() {
               {
                 label: "Total Screened",
                 value: results.totalResumes,
-                icon: "📋",
+                icon: <ClipboardList className="w-4 h-4" />,
               },
-              { label: "Shortlisted", value: shortlisted.length, icon: "✅" },
+              {
+                label: "Shortlisted",
+                value: shortlisted.length,
+                icon: <CheckCircle className="w-4 h-4" />,
+              },
               {
                 label: "Avg Score",
                 value: `${Math.round(results.candidates.reduce((s, c) => s + c.finalScore, 0) / results.candidates.length)}`,
-                icon: "📊",
+                icon: <BarChart3 className="w-4 h-4" />,
               },
               {
                 label: "Top Score",
                 value: results.candidates[0]?.finalScore ?? 0,
-                icon: "🏆",
+                icon: <Trophy className="w-4 h-4" />,
               },
             ].map((stat) => (
               <div
@@ -178,6 +203,12 @@ export default function Home() {
               </div>
             ))}
           </div>
+
+          {results.jdIntelligence && (
+            <div className="mb-6">
+              <JDIntelligencePanel result={results.jdIntelligence} />
+            </div>
+          )}
 
           {/* Candidate cards */}
           <div className="flex flex-col gap-[10px]">
@@ -379,13 +410,7 @@ export default function Home() {
   if (view === "processing") {
     return (
       <div className="min-h-screen bg-(--bg)">
-        <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center gap-2.5">
-          <span className="text-xl">
-            {" "}
-            <Image src="/icons/robot.svg" alt="Logo" width={40} height={40} />
-          </span>
-          <span className="font-bold text-[15px]">HireAgent</span>
-        </header>
+        <Header subtitle="Agentic AI Resume Screener" />
         <ProcessingScreen
           total={files.length}
           current={processing.current}
@@ -398,19 +423,7 @@ export default function Home() {
   // SETUP VIEW
   return (
     <div className="min-h-screen bg-(--bg)">
-      <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center gap-3">
-        <span className="text-lg">
-          <Image src="/icons/robot.svg" alt="Logo" width={40} height={40} />
-        </span>
-        <div>
-          <span className="font-bold text-lg text-(--text-primary)">
-            HireAgent
-          </span>
-          <span className="font-bold text-xs text-(--text-muted) ml-2">
-            Agentic AI Resume Screener
-          </span>
-        </div>
-      </header>
+      <Header onBack={reset} />
 
       <div className="max-w-4xl mx-auto py-8 px-5">
         <div className="text-center mb-9">
@@ -485,7 +498,15 @@ export default function Home() {
             />
           </div>
 
-          <JobDescriptionForm value={jd} onChange={setJd} />
+          <JobDescriptionForm
+            mode={jdMode}
+            onModeChange={setJdMode}
+            structured={structuredJD}
+            onStructuredChange={setStructuredJD}
+            freeText={freeTextJD}
+            onFreeTextChange={setFreeTextJD}
+            disabled={false}
+          />
           <ResumeUploader files={files} onChange={setFiles} />
 
           <button
@@ -516,7 +537,7 @@ export default function Home() {
           {!canSubmit && (
             <p className="text-center text-[12px] text-(--text-muted) -mt-2">
               {!apiKey ? "Add your Groq API key · " : ""}
-              {jd.trim().length < 20 ? "Add a job description · " : ""}
+              {/* {jd.trim().length < 20 ? "Add a job description · " : ""} */}
               {files.length === 0 ? "Upload at least one resume" : ""}
             </p>
           )}

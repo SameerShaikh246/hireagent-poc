@@ -37,7 +37,7 @@ export default function Header({
                     onClick={onBack}
                     className="text-[13px] text-(--accent) bg-(--accent-light) border border-[#bfdbfe] rounded-(--radius) px-[14px] py-[6px] cursor-pointer font-medium"
                 >
-                    ← New Screening
+                    Back to New Screening
                 </button>
             )}
         </header>

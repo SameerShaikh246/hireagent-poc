@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import JDIntelligencePanel from "@/components/JDIntelligencePanel";
 import Header from "@/components/Header";
+import WeightConfigurator from "@/components/WeightConfigurator";
 
 type View = "setup" | "processing" | "results";
 
@@ -507,6 +508,8 @@ export default function Home() {
             onFreeTextChange={setFreeTextJD}
             disabled={false}
           />
+
+          <WeightConfigurator />
           <ResumeUploader files={files} onChange={setFiles} />
 
           <button

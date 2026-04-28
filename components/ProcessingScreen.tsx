@@ -54,13 +54,12 @@ export default function ProcessingScreen({ total, current, stage }: Props) {
           return (
             <div
               key={s.key}
-              className={`px-3 py-1 rounded-full text-xs font-medium border transition-all ${
-                active
-                  ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-light)]"
-                  : done
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-all ${active
+                ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-light)]"
+                : done
                   ? "border-[var(--success)] text-[var(--success)] bg-[var(--success-light,#f0fdf4)]"
                   : "border-[var(--border)] text-[var(--text-muted)]"
-              }`}
+                }`}
             >
               {done ? "✓ " : ""}{s.label}
             </div>

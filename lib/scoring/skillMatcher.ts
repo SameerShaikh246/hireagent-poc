@@ -19,7 +19,7 @@ export function skillPresentInText(skill: string, text: string): boolean {
       ? new RegExp(ae, "i")
       : new RegExp(`\\b${ae}\\b`, "i");
     if (ap.test(text)) return true;
-  }
+}
 
   // Reverse check: is this skill listed as an alias for a canonical that appears in text?
   for (const [canonical, aliasList] of Object.entries(SKILL_ALIASES)) {

@@ -133,4 +133,5 @@ export type ParsedResume = {
   rawText: string;
   contentHash?: string;
   metadata?: Record<string, unknown>;
+  parseMethod: "plain-text" | "unpdf" | "pdf-parse-fallback" | "mammoth" | "failed"|"unsupported";
 };

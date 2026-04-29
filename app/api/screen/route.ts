@@ -1,244 +1,46 @@
 import type {
-  ParsedResume,
-  RuleBasedScore,
-  AIAssessment,
   CandidateResult,
+  ScreeningResponse,
   RoleType,
   EducationLevel,
 } from "@/types";
 import { NextRequest, NextResponse } from "next/server";
-import { groqGenerate } from "@/lib/groq";
 import parseAgent from "@/lib/parsers/parseResume";
-import { skillPresentInText } from "@/lib/scoring/skillMatcher";
 import { jdIntelligenceAgent } from "@/lib/agents/jdIntelligenceAgent";
+import { scoreAgent } from "@/lib/agents/scoreAgent";
+import { justifyAgent } from "@/lib/agents/justifyAgent";
 
-// SKILL EXTRACTION
-async function extractSkillsFromJD(
-  jd: string,
-  apiKey: string,
-): Promise<string[]> {
-  const prompt = `You are a technical recruiter assistant. Extract ONLY the technical skills, tools, frameworks, and technologies that are explicitly mentioned in the job description below.
-
-Rules:
-- Return a JSON array of lowercase strings only.
-- Each item must be a specific skill/technology (e.g. "react", "typescript", "rest api", "git").
-- Do NOT infer skills that are not written in the JD.
-- Do NOT add generic terms like "communication" or "teamwork".
-- Do NOT add broad categories like "frontend" or "backend" unless explicitly listed as a skill.
-- Treat "javascript" and "typescript" as separate items if both appear.
-- Output ONLY the raw JSON array — no markdown, no explanation, no code fences.
-
-JOB DESCRIPTION:
-${jd.slice(0, 2000)}`;
-
-  try {
-    const raw = await groqGenerate(prompt, { apiKey, maxTokens: 512 });
-
-    const cleaned = raw
-      .replace(/```(?:json)?\s*/gi, "")
-      .replace(/```/g, "")
-      .trim();
-    const match = cleaned.match(/\[[\s\S]*\]/);
-    if (!match) throw new Error("No JSON array");
-
-    const parsed: unknown = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) throw new Error("Not array");
-
-    return parsed
-      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-      .map((s) => s.toLowerCase().trim());
-  } catch (err) {
-    console.error("AI skill extraction failed:", err);
-    return [];
-  }
-}
-
-// SCORE AGENT
-function extractExperienceYearsFromText(text: string): number {
-  const patterns = [
-    /(\d+)\+?\s*years?\s+(?:of\s+)?(?:experience|exp)/gi,
-    /experience\s*[:\-]?\s*(\d+)\+?\s*years?/gi,
-  ];
-  const years: number[] = [];
-  for (const p of patterns) {
-    let m: RegExpExecArray | null;
-    while ((m = p.exec(text)) !== null) {
-      years.push(parseInt(m[1]));
-    }
-  }
-  return years.length ? Math.max(...years) : 0;
-}
-
-function detectEducation(text: string): number {
-  const t = text.toLowerCase();
-  if (t.includes("phd")) return 30;
-  if (t.includes("master") || t.includes("mba") || t.includes("m.tech"))
-    return 25;
-  if (t.includes("bachelor") || t.includes("b.tech") || t.includes("degree"))
-    return 20;
-  if (t.includes("diploma")) return 12;
-  return 5;
-}
-
-function scoreAgent(
-  resume: ParsedResume,
-  jdSkills: string[],
-  jdText: string,
-  requiredYearsOverride?: number,
-): RuleBasedScore {
-  const text = resume.rawText.toLowerCase();
-
-  const matchedSkills = jdSkills.filter((skill) =>
-    skillPresentInText(skill, text),
-  );
-  const missingSkills = jdSkills.filter(
-    (skill) => !matchedSkills.includes(skill),
-  );
-
-  const skillScore =
-    jdSkills.length > 0
-      ? Math.min(40, Math.round((matchedSkills.length / jdSkills.length) * 40))
-      : 20;
-
-  const requiredYearsMatch = jdText.match(/(\d+)\+?\s*years?/i);
-  const requiredYears =
-    requiredYearsOverride ??
-    (requiredYearsMatch ? parseInt(requiredYearsMatch[1]) : 3);
-
-  const candidateYears = extractExperienceYearsFromText(resume.rawText);
-
-  let experienceScore = 0;
-  if (candidateYears >= requiredYears) experienceScore = 30;
-  else if (candidateYears >= requiredYears - 1) experienceScore = 22;
-  else if (candidateYears >= requiredYears - 2) experienceScore = 15;
-  else if (candidateYears > 0) experienceScore = 8;
-
-  const educationScore = detectEducation(resume.rawText);
-  const total = skillScore + experienceScore + educationScore;
-
-  return {
-    skillScore,
-    experienceScore,
-    educationScore,
-    total,
-    matchedSkills,
-    missingSkills,
-    experienceYears: candidateYears,
-  };
-}
-
-async function justifyAgent(
-  resume: ParsedResume,
-  ruleScore: RuleBasedScore,
-  jd: string,
-  apiKey: string,
-): Promise<AIAssessment> {
-  const prompt = `You are a senior technical recruiter. Evaluate this candidate's resume strictly against the job description below.
-
-JOB DESCRIPTION:
-${jd.slice(0, 1500)}
-
-RESUME (${resume.fileName}):
-${resume.rawText.slice(0, 2500)}
-
-RULE-BASED PRE-SCREENING:
-- Skills matched from JD: ${ruleScore.matchedSkills.join(", ") || "none detected"}
-- Experience years detected: ${ruleScore.experienceYears}
-- Rule score: ${ruleScore.total}/100
-
-Your task: Return a JSON object. Output ONLY the raw JSON — no markdown, no code fences, no explanation outside the JSON.
-
-Required JSON shape:
-{
-  "roleFitScore": <integer 0-100 reflecting how well this candidate fits the specific JD>,
-  "strengths": [
-    "<specific strength tied to a JD requirement>",
-    "<specific strength tied to a JD requirement>",
-    "<specific strength tied to a JD requirement>"
-  ],
-  "gaps": [
-    "<specific gap or missing JD requirement>",
-    "<specific gap or missing JD requirement>"
-  ],
-  "explanation": "<2-3 sentences: how well the candidate matches this specific role and why>",
-  "whySelect": "<1-2 sentences: the strongest concrete reason to shortlist this candidate for THIS job, referencing specific JD criteria they meet>",
-  "whyNotSelect": "<1-2 sentences: the strongest concrete reason NOT to select, referencing specific JD criteria they are missing or weak on>",
-  "recommendation": "<exactly one of: Strong Yes, Yes, Maybe, No>"
-}`;
-
-  try {
-    const rawText = await groqGenerate(prompt, { apiKey, maxTokens: 1000 });
-
-    if (!rawText) throw new Error("Empty response from AI");
-  
-    const jsonStr = rawText
-      .replace(/```(?:json)?\s*/gi, "")
-      .replace(/```/g, "")
-      .trim();
-
-    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
-    if (!jsonMatch)
-      throw new Error(
-        `No JSON object found in response: ${rawText.slice(0, 200)}`,
-      );
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    const roleFitScore = Math.min(
-      100,
-      Math.max(0, Number(parsed.roleFitScore) || 50),
-    );
-    const overallScore = Math.round(ruleScore.total * 0.4 + roleFitScore * 0.6);
-    return {
-      roleFitScore,
-      overallScore,
-      strengths: Array.isArray(parsed.strengths)
-        ? parsed.strengths.slice(0, 3)
-        : [],
-      gaps: Array.isArray(parsed.gaps) ? parsed.gaps.slice(0, 3) : [],
-      explanation: String(parsed.explanation || ""),
-      whySelect: String(parsed.whySelect || ""),
-      whyNotSelect: String(parsed.whyNotSelect || ""),
-      recommendation: ["Strong Yes", "Yes", "Maybe", "No"].includes(
-        parsed.recommendation,
-      )
-        ? parsed.recommendation
-        : "Maybe",
-    };
-  } catch (err) {
-    console.error("Justify agent error for", resume.fileName, err);
-    const roleFitScore = Math.min(100, Math.round(ruleScore.total * 0.85));
-    const matched = ruleScore.matchedSkills;
-    return {
-      roleFitScore,
-      overallScore: Math.round(ruleScore.total * 0.4 + roleFitScore * 0.6),
-      strengths:
-        matched.length > 0
-          ? matched.slice(0, 3).map((s) => `Demonstrated experience with ${s}`)
-          : ["Resume submitted for review"],
-      gaps: ["Full AI assessment unavailable — review resume manually"],
-      explanation: `Rule-based screening gave a score of ${ruleScore.total}/100. ${matched.length} JD skills matched: ${matched.slice(0, 5).join(", ") || "none"}.`,
-      whySelect:
-        matched.length >= 3
-          ? `Candidate matches ${matched.length} key skills from the JD including ${matched.slice(0, 3).join(", ")}.`
-          : "Insufficient skill overlap detected for a confident recommendation.",
-      whyNotSelect:
-        ruleScore.experienceYears === 0
-          ? "Years of experience could not be verified from the resume."
-          : "AI assessment failed; manual review required to verify JD fit.",
-      recommendation:
-        ruleScore.total >= 70 ? "Yes" : ruleScore.total >= 50 ? "Maybe" : "No",
-    };
-  }
-}
-
-// MAIN ROUTE
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
+
     const jd = formData.get("jobDescription") as string;
     const apiKey = formData.get("apiKey") as string;
     const files = formData.getAll("resumes") as File[];
+    const jdMode = (formData.get("jdMode") as string) ?? "freetext";
+    const roleType: RoleType =
+      (formData.get("roleType") as RoleType) ?? "technical";
+    const educationRequired: EducationLevel =
+      (formData.get("educationRequired") as EducationLevel) ?? "bachelor";
+    const experienceMin = parseInt(
+      (formData.get("experienceMin") as string) ?? "3",
+      10,
+    );
+    const ruleBlend = parseFloat(
+      (formData.get("ruleBlend") as string) ?? "0.4",
+    );
 
+    let mandatorySkills: string[] = [];
+    const mandatoryRaw = formData.get("mandatorySkills") as string;
+    if (mandatoryRaw) {
+      try {
+        mandatorySkills = JSON.parse(mandatoryRaw);
+      } catch (err: unknown) {
+        console.error("Mandatory skills error:", err);
+      }
+    }
+
+    // Validation
     if (!jd || jd.trim().length < 20)
       return NextResponse.json(
         { error: "Job description is too short." },
@@ -254,15 +56,17 @@ export async function POST(req: NextRequest) {
         { error: "No resume files uploaded." },
         { status: 400 },
       );
-    const jdMode = (formData.get("jdMode") as string) ?? "freetext";
 
+    
+
+    // Structured JD input
     let structuredInput = null;
-
     if (jdMode === "structured") {
       try {
         structuredInput = {
           title: (formData.get("title") as string) ?? "",
-          roleType: (formData.get("roleType") as RoleType) ?? "technical",
+          roleType,
+          mandatorySkills,
           mustHaveSkills: JSON.parse(
             (formData.get("mustHaveSkills") as string) ?? "[]",
           ),
@@ -270,71 +74,147 @@ export async function POST(req: NextRequest) {
             (formData.get("niceToHaveSkills") as string) ?? "[]",
           ),
           experienceRange: {
-            min: parseInt((formData.get("experienceMin") as string) ?? "3", 10),
+            min: experienceMin,
             max: parseInt((formData.get("experienceMax") as string) ?? "6", 10),
           },
-          educationRequired:
-            ((
-              formData.get("educationRequired") as string
-            )?.toLowerCase() as EducationLevel) ?? "bachelor",
+          educationRequired,
           responsibilities: (formData.get("responsibilities") as string) ?? "",
         };
       } catch {
         structuredInput = null;
       }
     }
-    const jdIntel = await jdIntelligenceAgent(jd, structuredInput, apiKey);
-    console.log("JD Intelligence:", jdIntel);
 
-    let jdSkills = await extractSkillsFromJD(jd, apiKey);
+    // JD Intelligence Agent
+    const jdIntelligence = await jdIntelligenceAgent(
+      jd,
+      structuredInput,
+      apiKey,
+    );
 
-    if (jdIntel.mustHaveSkills.length > 0) {
-      jdSkills = jdIntel.mustHaveSkills;
-    }
+    const mustHaveSkills =
+      jdIntelligence.mustHaveSkills.length > 0
+        ? jdIntelligence.mustHaveSkills
+        : (structuredInput?.mustHaveSkills ?? []);
+    const niceToHaveSkills = jdIntelligence.niceToHaveSkills;
+    const correctedRoleType = jdIntelligence.roleType;
+    const correctedExpMin = jdIntelligence.correctedExperienceRange.min;
 
-    console.log("Final JD skills:", jdSkills);
+    // NOTE: mandatory skills are NOT passed to jdIntelligenceAgent for correction —
+    // they are the recruiter's hard business rule and should not be auto-modified.
 
-    const candidates: CandidateResult[] = [];
+    // Parse all resumes in parallel
+    const parsedResumes = await Promise.all(files.map((f) => parseAgent(f)));
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const parsed = await parseAgent(file);
+    // Duplicate detection
+    const seenHashes = new Map<string, string>();
+    const duplicateFlags = parsedResumes.map((r, i) => {
+      const hash = r.contentHash ?? "";
+      if (hash && seenHashes.has(hash)) {
+        return { isDuplicate: true, duplicateOf: seenHashes.get(hash)! };
+      }
+      seenHashes.set(hash, `candidate-${i + 1}`);
+      return { isDuplicate: false, duplicateOf: undefined };
+    });
+
+    // Score all candidates (mandatory filter applied inside scoreAgent)
+    const allCandidates: CandidateResult[] = [];
+
+    for (let i = 0; i < parsedResumes.length; i++) {
+      const parsed = parsedResumes[i];
+      const dupFlag = duplicateFlags[i];
 
       const ruleScore = scoreAgent(
         parsed,
-        jdSkills,
+        mandatorySkills,
+        mustHaveSkills,
         jd,
-        jdIntel.correctedExperienceRange?.min,
+        correctedExpMin,
       );
 
-      const aiAssessment = await justifyAgent(parsed, ruleScore, jd, apiKey);
+      // Disqualified candidates skip the AI justify step (saves API calls + cost)
+      let aiAssessment;
+      if (ruleScore.disqualified) {
+        aiAssessment = {
+          roleFitScore: 0,
+          overallScore: 0,
+          strengths: ruleScore.matchedSkills.slice(0, 3).map((s) => `Has ${s}`),
+          gaps: ruleScore.missingMandatorySkills.map(
+            (s) => `Missing mandatory skill: ${s}`,
+          ),
+          explanation: `Automatically disqualified: missing mandatory skill${ruleScore.missingMandatorySkills.length > 1 ? "s" : ""} — ${ruleScore.missingMandatorySkills.join(", ")}.`,
+          whySelect: "",
+          whyNotSelect: `Missing non-negotiable skill${ruleScore.missingMandatorySkills.length > 1 ? "s" : ""}: ${ruleScore.missingMandatorySkills.join(", ")}.`,
+          recommendation: "No" as const,
+          alternateRoles: [],
+        };
+      } else {
+        aiAssessment = await justifyAgent(
+          parsed,
+          ruleScore,
+          jd,
+          mustHaveSkills,
+          niceToHaveSkills,
+          correctedRoleType,
+          apiKey,
+        );
+      }
 
-      candidates.push({
+      const overallScore = ruleScore.disqualified
+        ? 0
+        : Math.round(
+            ruleScore.total * ruleBlend +
+              aiAssessment.roleFitScore * (1 - ruleBlend),
+          );
+      aiAssessment.overallScore = overallScore;
+
+      allCandidates.push({
         id: `candidate-${i + 1}`,
-        fileName: file.name,
+        fileName: parsed.fileName,
+        contentHash: parsed.contentHash,
+        isDuplicate: dupFlag.isDuplicate,
+        duplicateOf: dupFlag.duplicateOf,
         ruleScore,
         aiAssessment,
-        finalScore: aiAssessment.overallScore,
+        finalScore: overallScore,
         rank: 0,
+        jdUsed: jdIntelligence.changes.length > 0 ? "corrected" : "original",
       });
-
-      // Small delay between resumes to stay within Groq's 30 RPM limit
-      // if (i < files.length - 1) {
-      //   await new Promise((resolve) => setTimeout(resolve, 500));
-      // }
     }
 
-    candidates.sort((a, b) => b.finalScore - a.finalScore);
-    candidates.forEach((c, i) => {
+    // Split qualified vs disqualified
+    const qualifiedCandidates = allCandidates.filter(
+      (c) => !c.ruleScore.disqualified,
+    );
+    const disqualifiedCandidates = allCandidates.filter(
+      (c) => c.ruleScore.disqualified,
+    );
+
+    // Rank qualified candidates only
+    qualifiedCandidates.sort((a, b) => b.finalScore - a.finalScore);
+    qualifiedCandidates.forEach((c, i) => {
       c.rank = i + 1;
     });
 
-    return NextResponse.json({
-      candidates,
-      jdIntelligence: jdIntel,
+    // Disqualified get ranks starting after qualified
+    disqualifiedCandidates.forEach((c, i) => {
+      c.rank = qualifiedCandidates.length + i + 1;
+    });
+
+    const duplicatesFound = duplicateFlags.filter((d) => d.isDuplicate).length;
+
+    const response: ScreeningResponse = {
+      candidates: qualifiedCandidates,
+      disqualifiedCandidates,
+      jdIntelligence,
       processedAt: new Date().toISOString(),
       totalResumes: files.length,
-    });
+      duplicatesFound,
+      ruleBlend,
+      mandatorySkills,
+    };
+
+    return NextResponse.json(response);
   } catch (err: unknown) {
     console.error("Screening error:", err);
     const message = err instanceof Error ? err.message : "Unknown error";

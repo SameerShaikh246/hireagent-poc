@@ -133,6 +133,7 @@ export type ParsedResume = {
   rawText: string;
   contentHash?: string;
   metadata?: Record<string, unknown>;
+  parseMethod: string;
 };
 
 

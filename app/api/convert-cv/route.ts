@@ -27,7 +27,7 @@ async function extractText(file: File): Promise<string> {
       // const pdfParse = (await import("pdf-parse")).default;
       // const result = await pdfParse(buffer);
       // return result.text;
-    } catch {
+    } catch (err) {
       console.error("PDF parse error:", err);
       throw new Error("Could not read PDF file.");
     }

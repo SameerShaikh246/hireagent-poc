@@ -654,19 +654,7 @@ export default function Home() {
   // SETUP VIEW
   return (
     <div className="min-h-screen bg-(--bg)">
-      <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center gap-3">
-        <span className="text-lg">
-          <Image src="/icons/robot.svg" alt="Logo" width={40} height={40} />
-        </span>
-        <div>
-          <span className="font-bold text-lg text-(--text-primary)">
-            HireAgent
-          </span>
-          <span className="font-bold text-xs text-(--text-muted) ml-2">
-            Agentic AI Resume Screener
-          </span>
-        </div>
-      </header>
+      <Header subtitle="Agentic AI Resume Screener" />
 
       <div className="max-w-4xl mx-auto py-8 px-5">
         <div className="text-center mb-9">

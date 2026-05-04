@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { Bot } from "lucide-react";
+import Link from "next/link";
 
 type HeaderProps = {
     title?: string;
@@ -25,21 +25,29 @@ export default function Header({
                         {title}
                     </span>
                     {subtitle && (
-                        <span className="text-xs text-(--text-muted) ml-2">
-                            {subtitle}
-                        </span>
+                        <span className="text-xs text-(--text-muted) ml-2">{subtitle}</span>
                     )}
                 </div>
             </div>
 
-            {showBack && (
-                <button
-                    onClick={onBack}
-                    className="text-[13px] text-(--accent) bg-(--accent-light) border border-[#bfdbfe] rounded-(--radius) px-[14px] py-[6px] cursor-pointer font-medium"
-                >
-                    Back to New Screening
-                </button>
-            )}
+            <div className="flex items-center gap-3">
+                {/* Convert CV Button */}
+                <Link href="/convert-cv">
+                    <button className="text-[13px] text-white bg-(--accent) rounded-(--radius) px-[14px] py-1 cursor-pointer font-medium hover:bg-(--accent-hover)">
+                        Convert CV
+                    </button>
+                </Link>
+
+                {/* Back button */}
+                {showBack && (
+                    <button
+                        onClick={onBack}
+                        className="text-[13px] text-(--accent) bg-(--accent-light) border border-[#bfdbfe] rounded-(--radius) px-[14px] py-1 cursor-pointer font-medium"
+                    >
+                        Back
+                    </button>
+                )}
+            </div>
         </header>
     );
 }

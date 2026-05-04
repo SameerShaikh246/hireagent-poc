@@ -134,3 +134,34 @@ export type ParsedResume = {
   contentHash?: string;
   metadata?: Record<string, unknown>;
 };
+
+
+// Shared CV types
+
+export type Project = {
+  name: string;
+  role: string;
+  responsibilities: string[];
+};
+
+export type ParsedCV = {
+  name: string;
+  phone: string;
+  email: string;
+  summary: string[];
+  education: string;
+  projects: Project[];
+  certifications: string[];
+};
+
+export type CandidateOptions = {
+  includeName: boolean;
+  includePhone: boolean;
+  includeEmail: boolean;
+  maxProjects: number;
+};
+
+export type ConvertCVResponse = {
+  parsed: ParsedCV;
+  pdfBase64: string;
+};

@@ -312,20 +312,13 @@ async function drawProjectTable(
       color: row.isHeader ? COLOR_BLACK : COLOR_GRAY,
     });
 
-    // Horizontal separator above row (except first row — top border)
+    // Only draw top border for header
     if (ri === 0) {
       ctx.page.drawLine({
         start: { x: MARGIN_L, y: rowY },
         end: { x: MARGIN_L + CONTENT_W, y: rowY },
         thickness: 0.5,
         color: COLOR_BLACK,
-      });
-    } else {
-      ctx.page.drawLine({
-        start: { x: MARGIN_L, y: rowY },
-        end: { x: MARGIN_L + CONTENT_W, y: rowY },
-        thickness: 0.3,
-        color: COLOR_GRAY,
       });
     }
 

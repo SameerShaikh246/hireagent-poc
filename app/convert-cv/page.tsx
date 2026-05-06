@@ -263,7 +263,7 @@ export default function CVConverterPage() {
         <div className="w-7 h-7 rounded-lg bg-[var(--accent-light)] flex items-center justify-center text-[15px]">📄</div>
         <div>
           <span className="font-bold text-[15px] text-[var(--text-primary)]">CV Converter</span>
-          <span className="text-[12px] text-[var(--text-muted)] ml-2">→ Soft</span>
+          <span className="text-[12px] text-[var(--text-muted)] ml-2">→ SP Format</span>
         </div>
       </header>
       <div className="max-w-[860px] mx-auto py-8 px-5">

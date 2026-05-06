@@ -143,8 +143,6 @@ CRITICAL Rules — read carefully:
 // Route handler
 export async function POST(req: NextRequest) {
   try {
-    console.log("reqreq", req);
-
     const formData = await req.formData();
 
     const apiKey = ((formData.get("apiKey") as string) ?? "").trim();

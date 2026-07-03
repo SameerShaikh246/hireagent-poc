@@ -7,20 +7,29 @@ import { skillPresentInText } from "../scoring/skillMatcher";
 
 // EXPERIENCE
 function extractExperienceYears(text: string): number {
-  const patterns = [
+  const explicit = [
     /(\d+)\+?\s*years?\s+(?:of\s+)?(?:experience|exp)/gi,
     /experience\s*[:\-]?\s*(\d+)\+?\s*years?/gi,
   ];
 
   const years: number[] = [];
-  for (const p of patterns) {
+  for (const p of explicit) {
     let m: RegExpExecArray | null;
-    while ((m = p.exec(text)) !== null) {
-      years.push(parseInt(m[1]));
-    }
+    while ((m = p.exec(text)) !== null) years.push(parseInt(m[1]));
   }
+  if (years.length) return Math.max(...years);
 
-  return years.length ? Math.max(...years) : 0;
+  // Fallback: sum up date ranges like "Jan 2020 - Present", "2019 – 2022"
+  const rangePattern =
+    /(\d{4})\s*[-–—to]+\s*(present|current|\d{4})/gi;
+  let totalMonths = 0;
+  let m: RegExpExecArray | null;
+  while ((m = rangePattern.exec(text)) !== null) {
+    const start = parseInt(m[1]);
+    const end = /present|current/i.test(m[2]) ? new Date().getFullYear() : parseInt(m[2]);
+    if (end >= start) totalMonths += (end - start) * 12;
+  }
+  return totalMonths > 0 ? Math.round(totalMonths / 12) : 0;
 }
 
 // EDUCATION
@@ -32,6 +41,7 @@ function detectEducation(text: string): number {
   if (t.includes("bachelor") || t.includes("b.tech") || t.includes("degree"))
     return 20;
   if (t.includes("diploma")) return 12;
+  
   return 5;
 }
 
@@ -88,7 +98,7 @@ export function scoreAgent(
   else if (candidateYears >= requiredYears - 1) experienceScore = 22;
   else if (candidateYears >= requiredYears - 2) experienceScore = 15;
   else if (candidateYears > 0) experienceScore = 8;
-
+  else experienceScore = 5;
   // EDUCATION
   const educationScore = detectEducation(resume.rawText);
 

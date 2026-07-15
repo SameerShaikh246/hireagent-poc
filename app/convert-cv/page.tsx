@@ -26,7 +26,7 @@ function downloadBase64Pdf(base64: string, filename: string) {
   link.click();
 }
 
-// PDF Preview Modal
+// ── PDF Preview Modal ────────────────────────────────────────────────────────
 function PdfPreviewModal({
   base64,
   onClose,
@@ -53,7 +53,7 @@ function PdfPreviewModal({
       >
         {/* Modal header */}
         <div
-          className="flex items-center justify-between px-5 py-3 shrink-0"
+          className="flex items-center justify-between px-5 py-3 flex-shrink-0"
           style={{
             borderBottom: "1px solid var(--border)",
             background: "var(--surface)",
@@ -122,7 +122,7 @@ function PdfPreviewModal({
   );
 }
 
-// Step indicator 
+// ── Step indicator ───────────────────────────────────────────────────────────
 function Steps({ state }: { state: ConvertState }) {
   const steps = [
     { key: "uploading", label: "Extracting text" },
@@ -178,7 +178,7 @@ function Steps({ state }: { state: ConvertState }) {
   );
 }
 
-// Parsed preview
+// ── Parsed preview ───────────────────────────────────────────────────────────
 function ParsedPreview({
   parsed,
   options,
@@ -421,7 +421,7 @@ function ParsedPreview({
   );
 }
 
-// Download actions bar
+// ── Download actions bar ─────────────────────────────────────────────────────
 function DownloadBar({
   result,
   fileName,
@@ -435,8 +435,39 @@ function DownloadBar({
   parsed: ParsedCV;
   onPreview: () => void;
 }) {
-
+  const [docxState, setDocxState] = useState<"idle" | "loading" | "error">("idle");
   const baseName = fileName.replace(/\.[^.]+$/, "");
+
+  const downloadDocx = async () => {
+    setDocxState("loading");
+    try {
+      const res = await fetch("/api/convert-cv/docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parsed,
+          options: {
+            includeName: true,
+            includePhone: options.includeUserDetails,
+            includeEmail: options.includeUserDetails,
+            maxProjects: options.maxProjects,
+          },
+        }),
+      });
+      if (!res.ok) throw new Error("DOCX generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}_SP.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDocxState("idle");
+    } catch {
+      setDocxState("error");
+      setTimeout(() => setDocxState("idle"), 3000);
+    }
+  };
 
   return (
     <div
@@ -510,19 +541,50 @@ function DownloadBar({
 
         {/* Download DOCX */}
         <button
-          onClick={() => alert("DOCX download not implemented yet")}
+          onClick={downloadDocx}
+          disabled={docxState === "loading"}
           className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-[14px] font-semibold transition-all border-2"
+          style={{
+            borderColor:
+              docxState === "error"
+                ? "var(--danger)"
+                : "var(--accent)",
+            color:
+              docxState === "error"
+                ? "var(--danger)"
+                : "#fff",
+            background:
+              docxState === "loading"
+                ? "var(--accent)"
+                : docxState === "error"
+                  ? "#FEF2F2"
+                  : "var(--accent)",
+            cursor: docxState === "loading" ? "not-allowed" : "pointer",
+            opacity: docxState === "loading" ? 0.75 : 1,
+          }}
         >
-
-          <span className="text-[16px]">📝</span>
-          Download DOCX
+          {docxState === "loading" ? (
+            <>
+              <span
+                className="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin"
+              />
+              Generating…
+            </>
+          ) : docxState === "error" ? (
+            <>⚠ DOCX failed</>
+          ) : (
+            <>
+              <span className="text-[16px]">📝</span>
+              Download DOCX
+            </>
+          )}
         </button>
       </div>
     </div>
   );
 }
 
-// Main page
+// ── Main page ────────────────────────────────────────────────────────────────
 export default function CVConverterPage() {
   const [file, setFile] = useState<File | null>(null);
   const [apiKey, setApiKey] = useState("");

@@ -12,17 +12,21 @@ import JobDescriptionForm, {
 } from "@/components/JobDescriptionForm";
 import ResumeUploader from "@/components/ResumeUploader";
 import ProcessingScreen from "@/components/ProcessingScreen";
+import WebCandidateSearch from "@/components/WebCandidateSearch";
 import {
   BarChart3,
   Trophy,
   CheckCircle,
   ClipboardList,
   XCircle,
+  Search,
+  Upload,
 } from "lucide-react";
 import JDIntelligencePanel from "@/components/JDIntelligencePanel";
 import Header from "@/components/Header";
 
 type View = "setup" | "processing" | "results";
+type SetupTab = "upload" | "web-search";
 
 const recommendationStyle = (rec: string) => {
   switch (rec) {
@@ -363,6 +367,7 @@ function CandidateCard({
 
 export default function Home() {
   const [view, setView] = useState<View>("setup");
+  const [setupTab, setSetupTab] = useState<SetupTab>("upload");
   const [jdMode, setJdMode] = useState<JDMode>("structured");
   const [apiKey, setApiKey] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -483,6 +488,8 @@ export default function Home() {
   };
 
   // RESULTS VIEW
+  const jdText = jdMode === "structured" ? buildJDText(structuredJD) : freeTextJD;
+
   if (view === "results" && results) {
     const shortlisted = results.candidates.filter((c) =>
       ["Strong Yes", "Yes"].includes(c.aiAssessment.recommendation),
@@ -518,7 +525,11 @@ export default function Home() {
                     : "—",
                 icon: <BarChart3 className="w-4 h-4" />,
               },
-              { label: "Disqualified", value: dqCount, icon: <XCircle className="w-4 h-4" /> },
+              {
+                label: "Disqualified",
+                value: dqCount,
+                icon: <XCircle className="w-4 h-4" />,
+              },
             ].map((stat) => (
               <div
                 key={stat.label}
@@ -556,7 +567,6 @@ export default function Home() {
               </span>
             </div>
           )}
-
 
           {results.jdIntelligence && (
             <div className="mb-6">
@@ -742,41 +752,122 @@ export default function Home() {
             apiKey={apiKey}
           />
 
+          {/* ── Mode tabs: Upload CVs vs Web Search ── */}
+          <div className="bg-(--surface) border border-(--border) rounded-(--radius-lg) overflow-hidden shadow-(--shadow-sm)">
+            {/* Tab bar */}
+            <div className="flex border-b border-(--border)">
+              <button
+                onClick={() => setSetupTab("upload")}
+                className="flex-1 flex items-center justify-center gap-2 py-3 text-[13px] font-semibold border-none cursor-pointer transition-colors"
+                style={{
+                  background:
+                    setupTab === "upload"
+                      ? "var(--accent-light)"
+                      : "transparent",
+                  color:
+                    setupTab === "upload"
+                      ? "var(--accent)"
+                      : "var(--text-muted)",
+                  borderBottom:
+                    setupTab === "upload"
+                      ? "2px solid var(--accent)"
+                      : "2px solid transparent",
+                }}
+              >
+                <Upload className="w-4 h-4" />
+                Upload Resumes
+              </button>
+              <button
+                onClick={() => setSetupTab("web-search")}
+                className="flex-1 flex items-center justify-center gap-2 py-3 text-[13px] font-semibold border-none cursor-pointer transition-colors"
+                style={{
+                  background:
+                    setupTab === "web-search"
+                      ? "#eff6ff"
+                      : "transparent",
+                  color:
+                    setupTab === "web-search"
+                      ? "#2563eb"
+                      : "var(--text-muted)",
+                  borderBottom:
+                    setupTab === "web-search"
+                      ? "2px solid #2563eb"
+                      : "2px solid transparent",
+                }}
+              >
+                <Search className="w-4 h-4" />
+                Find Candidates Online
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#dcfce7] text-[#15803d] border border-[#86efac]">
+                  New
+                </span>
+              </button>
+            </div>
 
+            {/* Tab content */}
+            <div className="p-4">
+              {setupTab === "upload" ? (
+                <ResumeUploader files={files} onChange={setFiles} />
+              ) : (
+                <WebCandidateSearch
+                  structuredJD={structuredJD}
+                  jdText={jdText}
+                />
+              )}
+            </div>
+          </div>
 
-          <ResumeUploader files={files} onChange={setFiles} />
+          {/* Screen button — only shown on upload tab */}
+          {setupTab === "upload" && (
+            <>
+              <button
+                onClick={runScreening}
+                disabled={!canSubmit}
+                className="w-full py-3.5 rounded-xl text-white font-semibold text-[15px] border-none tracking-[-0.01em] transition-colors duration-150"
+                style={{
+                  background: canSubmit ? "var(--accent)" : "#93c5fd",
+                  cursor: canSubmit ? "pointer" : "not-allowed",
+                }}
+                onMouseEnter={(e) => {
+                  if (canSubmit)
+                    (e.target as HTMLButtonElement).style.background =
+                      "var(--accent-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  if (canSubmit)
+                    (e.target as HTMLButtonElement).style.background =
+                      "var(--accent)";
+                }}
+              >
+                Screen{" "}
+                {files.length > 0
+                  ? `${files.length} Resume${files.length > 1 ? "s" : ""}`
+                  : "Resumes"}
+              </button>
 
-          <button
-            onClick={runScreening}
-            disabled={!canSubmit}
-            className="w-full py-3.5 rounded-xl text-white font-semibold text-[15px] border-none tracking-[-0.01em] transition-colors duration-150"
-            style={{
-              background: canSubmit ? "var(--accent)" : "#93c5fd",
-              cursor: canSubmit ? "pointer" : "not-allowed",
-            }}
-            onMouseEnter={(e) => {
-              if (canSubmit)
-                (e.target as HTMLButtonElement).style.background =
-                  "var(--accent-hover)";
-            }}
-            onMouseLeave={(e) => {
-              if (canSubmit)
-                (e.target as HTMLButtonElement).style.background =
-                  "var(--accent)";
-            }}
-          >
-            Screen{" "}
-            {files.length > 0
-              ? `${files.length} Resume${files.length > 1 ? "s" : ""}`
-              : "Resumes"}
-          </button>
+              {!canSubmit && (
+                <p className="text-center text-[12px] text-(--text-muted) -mt-2">
+                  {!apiKey ? "Add your Groq API key · " : ""}
+                  {files.length === 0 ? "Upload at least one resume" : ""}
+                </p>
+              )}
+            </>
+          )}
 
-          {!canSubmit && (
-            <p className="text-center text-[12px] text-(--text-muted) -mt-2">
-              {!apiKey ? "Add your Groq API key · " : ""}
-              {/* {jd.trim().length < 20 ? "Add a job description · " : ""} */}
-              {files.length === 0 ? "Upload at least one resume" : ""}
-            </p>
+          {/* Web search tip */}
+          {setupTab === "web-search" && (
+            <div className="flex items-start gap-3 px-4 py-3 bg-[#fffbeb] border border-[#fde68a] rounded-(--radius-lg) text-[12px] text-[#92400e]">
+              <span className="text-[16px] shrink-0">💡</span>
+              <div>
+                <span className="font-semibold">Tip:</span> Web search finds publicly available candidate profiles from LinkedIn, GitHub, and portfolios. To screen uploaded resumes with AI scoring, switch to the{" "}
+                <button
+                  onClick={() => setSetupTab("upload")}
+                  className="text-(--accent) underline bg-transparent border-none cursor-pointer p-0"
+                >
+                  Upload Resumes
+                </button>{" "}
+                tab.
+              </div>
+            </div>
           )}
         </div>
       </div>

@@ -811,6 +811,8 @@ export default function Home() {
                 <WebCandidateSearch
                   structuredJD={structuredJD}
                   jdText={jdText}
+                  jdMode={jdMode}
+                  groqApiKey={apiKey}
                 />
               )}
             </div>

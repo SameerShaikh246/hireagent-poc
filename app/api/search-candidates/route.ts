@@ -18,17 +18,17 @@ export interface WebCandidate {
   location?: string;
   experienceYears?: number;         // PDL-derived
   education?: string;               // highest degree
-  provider: "pdl" | "tavily" | "exa" | "serper";
+  provider: "pdl" | "tavily" | "exa" | "serper" | "github";
 }
 
 export interface CandidateSearchResponse {
   candidates: WebCandidate[];
   totalFound: number;
   searchedAt: string;
-  provider: "pdl" | "tavily" | "exa" | "serper";
+  provider: "pdl" | "tavily" | "exa" | "serper" | "github";
   creditsUsed?: number;
-  // NEW: present only when jdMode === "freetext" — tells the client what
-  // the Groq extraction step inferred, so the UI can show it after search.
+  warning?: string;
+
   extractedJD?: {
     jobTitle: string;
     mandatorySkills: string[];
@@ -37,7 +37,8 @@ export interface CandidateSearchResponse {
   };
 }
 
-type Provider = "pdl" | "tavily" | "exa" | "serper";
+
+type Provider = "pdl" | "tavily" | "exa" | "serper" | "github";
 type RawResult = { title: string; url: string; snippet: string };
 type JDMode = "structured" | "freetext";
 
@@ -106,6 +107,21 @@ function matchSkillsInText(text: string, skills: string[]): string[] {
   return [...seen];
 }
 
+// ─── Hard allow-list sanitizer ─────────────────────────────────────────────────
+// CRITICAL: this is the single source of truth that prevents any skill outside
+// the JD's actual skill list from ever appearing in matchedSkills, regardless
+// of what an LLM (Groq) or any heuristic returns. Every code path that sets
+// matchedSkills — GitHub matching, web-search matching, Groq enrichment — must
+// run its output through this before it's used or merged.
+function sanitizeToAllowedSkills(skills: string[], allSkills: string[]): string[] {
+  const allowedCanonical = new Set(allSkills.map(canonicalSkill));
+  return [...new Set(
+    skills
+      .map((s) => canonicalSkill(s))
+      .filter((s) => allowedCanonical.has(s))
+  )];
+}
+
 // ─── Simple relevance scorer (web-search fallback) ────────────────────────────
 function scoreWebResult(
   matchedSkills: string[],
@@ -122,8 +138,9 @@ function scoreWebResult(
 // ─── Free-text JD extraction (Groq) ───────────────────────────────────────
 // When jdMode === "freetext" the client only has raw JD text — no title / skill
 // tiers. We ask Groq to derive them so the rest of the pipeline (PDL query
-// builder, web search query builder, skill matching, scoring) can run exactly
-// as it already does for structured JDs, completely unchanged.
+// builder, web search query builder, GitHub query planner, skill matching,
+// scoring) can run exactly as it already does for structured JDs, completely
+// unchanged.
 
 interface ExtractedJDFields {
   jobTitle: string;
@@ -157,6 +174,19 @@ Rules:
 - Use short, common skill names such as "React", "AWS", "SQL".
 - Maximum 8 items per list.
 - "jobTitle" should be the single best-fit role title, such as "Senior Backend Engineer".
+- Only extract skills that are explicitly mentioned in the job description.
+- Do not infer related, implied, commonly paired, or industry-standard skills.
+- For example, if the JD says "React", do not add JavaScript, HTML, CSS, Redux, or TypeScript unless they are explicitly mentioned.
+- If the JD mentions a technology only as background/context and does not require or prefer it, do not include it as a hiring skill.
+- Do not convert responsibilities into skills unless the responsibility explicitly names a skill or technology.
+- Ignore technologies mentioned only as company infrastructure, existing systems,
+  examples, unrelated teams, or general company background unless the JD explicitly
+  requires candidates to have those skills.
+- Ignore technologies mentioned only in phrases such as "we use", "our stack includes",
+  "you may work alongside", or "our engineering team uses", unless the candidate is
+  explicitly expected to know them.
+
+
 
 Job description:
 
@@ -291,7 +321,7 @@ IMPORTANT RULES:
    "React JS Developer | Software Engineer at ABC"
    should become something like:
    "React.js Developer"
-   A company name alone (e.g. "Wipro", "TCS") is NEVER a valid job title — if that's all you have, infer the likely title from profileText instead, or leave it generic (e.g. "Software Engineer") only if profileText supports it.
+   A company name alone (e.g. "Wipro", "TCS") is NEVER a valid job title — if that's all you have, infer the likely title from profileText instead, or leave it generic (e.g. "Professional") only if profileText supports it. NEVER output placeholder text like "Cleaned title not available" — if you truly cannot determine a title, just output "Professional".
 10. Extract the current company only when supported by the source.
 11. Write a concise, professional recruiter-style summary — 1-2 sentences, third person, factual. Never copy or lightly reword social-media "activity feed" language (e.g. "liked this", "exploring life", "excited to share"). If the only available text is feed noise with no real bio, keep the summary short and generic based on title/company/skills only, and lower confidence accordingly.
 12. The summary should explain:
@@ -301,7 +331,13 @@ IMPORTANT RULES:
     - role relevance
 13. Do not claim years of experience unless supported by the source.
 14. Do not invent employers, projects, degrees, skills, seniority, or locations.
-15. matchedSkills must contain only skills supported by the supplied information.
+15. matchedSkills MUST be a subset of this EXACT list — do not include ANY skill, technology,
+    or term that is not verbatim (or a clear synonym) of an item in this list, even if something
+    else appears in the candidate's bio/profile. If none of these skills are supported by the
+    candidate's information, return an empty array. Do not substitute similar-sounding or
+    generically "related" skills — e.g. if the allowed list is marketing skills, do NOT return
+    programming languages or frameworks, and vice versa:
+    ${JSON.stringify(allSkills)}
 16. confidence must represent how confident you are in identifying/normalizing the profile from the source.
 17. QUALITY GATE — set "isValidCandidate": false (and give a short "rejectionReason") when the result is NOT an actual individual candidate profile, for example:
     - It's a job listing / job board page ("Jobs Openings", "Active Jobs", "Hiring", "Apply Now" pages)
@@ -312,6 +348,9 @@ IMPORTANT RULES:
 18. "nameConfidence" (0-1) reflects specifically how sure you are the "name" field is a real person's name (separate from overall "confidence").
 19. Return ONLY valid JSON.
 20. Preserve the candidate index exactly.
+21. Evaluate EACH candidate independently based ONLY on their own profileText/title/company —
+    never reuse the same matchedSkills, title, or summary across multiple candidates unless
+    their source material genuinely supports identical output.
 
 The skills being searched for are:
 
@@ -370,16 +409,23 @@ ${JSON.stringify(input, null, 2)}
         continue;
       }
 
+      const rawTitle =
+        typeof item.title === "string" && item.title.trim()
+          ? item.title.trim()
+          : candidates[item.index].title;
+
       enrichmentMap.set(item.index, {
         name:
           typeof item.name === "string" && item.name.trim()
             ? item.name.trim()
             : "Unknown Candidate",
 
+        // Guard against the model (or any future prompt drift) emitting a
+        // literal placeholder instead of a real title.
         title:
-          typeof item.title === "string" && item.title.trim()
-            ? item.title.trim()
-            : candidates[item.index].title,
+          /cleaned title not available/i.test(rawTitle) || !rawTitle.trim()
+            ? "Professional"
+            : rawTitle,
 
         company:
           typeof item.company === "string"
@@ -402,9 +448,14 @@ ${JSON.stringify(input, null, 2)}
             ? Math.round(item.experienceYears)
             : candidates[item.index].experienceYears,
 
-        matchedSkills: Array.isArray(item.matchedSkills)
-          ? item.matchedSkills.map(String)
-          : candidates[item.index].matchedSkills,
+        // HARD SANITIZATION: whatever Groq returns for matchedSkills is
+        // filtered against the JD's actual allSkills list right here, before
+        // it ever gets stored or merged. This is what prevents unrelated
+        // skills (e.g. "react" on a Digital Marketing search) from leaking in.
+        matchedSkills: sanitizeToAllowedSkills(
+          Array.isArray(item.matchedSkills) ? item.matchedSkills.map(String) : [],
+          allSkills,
+        ),
 
         confidence:
           typeof item.confidence === "number"
@@ -442,18 +493,20 @@ ${JSON.stringify(input, null, 2)}
           return null;
         }
 
-        const matchedSkills = [
-          ...new Set([
-            ...candidate.matchedSkills,
-            ...enriched.matchedSkills,
-          ]),
-        ];
+        // Both sides of this merge are already sanitized to allSkills — the
+        // original candidate.matchedSkills came from GitHub/web-search
+        // matching which is itself constrained (see searchGitHubAPI /
+        // webResultToCandidate), and enriched.matchedSkills was sanitized
+        // just above. Re-sanitizing here is a final guarantee, not redundant
+        // defense — it protects against any future code path that sets
+        // candidate.matchedSkills without going through sanitization.
+        const matchedSkills = sanitizeToAllowedSkills(
+          [...candidate.matchedSkills, ...enriched.matchedSkills],
+          allSkills,
+        );
 
         const missingSkills = allSkills.filter(
-          (skill) =>
-            !matchedSkills
-              .map(canonicalSkill)
-              .includes(canonicalSkill(skill)),
+          (skill) => !matchedSkills.includes(canonicalSkill(skill)),
         );
 
         return {
@@ -591,6 +644,20 @@ function highestDegree(education: PDLPersonRecord["education"]): string | undefi
   return best || undefined;
 }
 
+function getAllJDSkills(
+  mandatorySkills: string[],
+  mustHaveSkills: string[],
+  niceToHaveSkills: string[],
+): string[] {
+  return [
+    ...new Set([
+      ...mandatorySkills,
+      ...mustHaveSkills,
+      ...niceToHaveSkills,
+    ].map(canonicalSkill)),
+  ];
+}
+
 function scorePDLCandidate(
   record: PDLPersonRecord,
   mandatorySkills: string[],
@@ -668,19 +735,26 @@ async function searchPDL(
     throw new Error(`PDL API error ${res.status}: ${text.slice(0, 300)}`);
   }
 
+
+
   const data = await res.json();
   const records: PDLPersonRecord[] = data.data ?? [];
   const totalFound: number = data.total ?? records.length;
-  const allSkills = [...new Set([...mandatorySkills, ...mustHaveSkills, ...niceToHaveSkills])];
+  const allSkills = getAllJDSkills(
+  mandatorySkills,
+  mustHaveSkills,
+  niceToHaveSkills,
+);
+
 
   const candidates: WebCandidate[] = records.map((r, i) => {
     const pdlSkills = (r.skills ?? []).map((s) => s.toLowerCase());
     const allText = `${r.job_title ?? ""} ${r.summary ?? ""} ${r.headline ?? ""} ${pdlSkills.join(" ")}`;
-    const matchedSkills = [...new Set([
+    const matchedSkills = sanitizeToAllowedSkills([
       ...allSkills.filter((s) => pdlSkills.includes(s.toLowerCase())),
       ...matchSkillsInText(allText, allSkills),
-    ])];
-    const missingSkills = allSkills.filter((s) => !matchedSkills.map(canonicalSkill).includes(canonicalSkill(s)));
+    ], allSkills);
+    const missingSkills = allSkills.filter((s) => !matchedSkills.includes(canonicalSkill(s)));
     const expYears = r.inferred_years_experience ?? calcExperienceYears(r.experience);
     const edu = highestDegree(r.education);
     const url = r.linkedin_url
@@ -717,12 +791,35 @@ async function searchPDL(
 }
 
 // ─── Web search providers (Tavily / Exa / Serper) ─────────────────────────────
+// function detectSource(url: string): WebCandidate["source"] {
+//   if (url.includes("linkedin.com/in/")) return "linkedin";
+//   if (url.includes("github.com/") && url.split("/").filter(Boolean).length <= 4) return "github";
+//   if (url.includes("behance") || url.includes("dribbble") || url.includes("portfolio") || url.includes("about.me")) return "portfolio";
+//   return "other";
+// }
 function detectSource(url: string): WebCandidate["source"] {
-  if (url.includes("linkedin.com/in/")) return "linkedin";
-  if (url.includes("github.com/") && url.split("/").filter(Boolean).length <= 4) return "github";
-  if (url.includes("behance") || url.includes("dribbble") || url.includes("portfolio") || url.includes("about.me")) return "portfolio";
+  const normalizedUrl = url.toLowerCase();
+
+  if (normalizedUrl.includes("linkedin.com/in/")) return "linkedin";
+  if (
+    normalizedUrl.includes("github.com/") &&
+    normalizedUrl.split("/").filter(Boolean).length <= 4
+  ) {
+    return "github";
+  }
+
+  if (
+    normalizedUrl.includes("behance") ||
+    normalizedUrl.includes("dribbble") ||
+    normalizedUrl.includes("portfolio") ||
+    normalizedUrl.includes("about.me")
+  ) {
+    return "portfolio";
+  }
+
   return "other";
 }
+
 
 const JOB_SIGNALS = [
   "linkedin.com/jobs", "indeed.com", "glassdoor.com", "naukri.com", "monster.com",
@@ -761,8 +858,8 @@ function webResultToCandidate(
 ): WebCandidate {
   const source = detectSource(r.url);
   const combined = `${r.title} ${r.snippet}`;
-  const matchedSkills = matchSkillsInText(combined, allSkills);
-  const missingSkills = allSkills.filter((s) => !matchedSkills.map(canonicalSkill).includes(canonicalSkill(s)));
+  const matchedSkills = sanitizeToAllowedSkills(matchSkillsInText(combined, allSkills), allSkills);
+  const missingSkills = allSkills.filter((s) => !matchedSkills.includes(canonicalSkill(s)));
   return {
     id: `web-${i + 1}`,
     name: extractName(r.title, r.snippet),
@@ -839,7 +936,12 @@ async function runWebSearch(
   groqApiKey?: string,
 ): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
   const skills = [...new Set([...mandatorySkills, ...mustHaveSkills])].slice(0, 4).join(" ");
-  const allSkills = [...new Set([...mandatorySkills, ...mustHaveSkills, ...niceToHaveSkills])];
+ const allSkills = getAllJDSkills(
+  mandatorySkills,
+  mustHaveSkills,
+  niceToHaveSkills,
+);
+
 
   const queries = [
     `site:linkedin.com/in "${jobTitle}" ${skills} "${location}"`,
@@ -888,6 +990,433 @@ async function runWebSearch(
   };
 }
 
+// ─── GitHub: dynamic query planning via Groq ───────────────────────────────
+// GitHub user-search only supports two useful signals: `language:X` (a FIXED
+// vocabulary of real repo languages) and free-text keyword matching against
+// bio/name/company. Skills like "React", "SEO", "AWS" aren't languages, so a
+// static skill->language table can never cover the full JD space, and would
+// also incorrectly try to map non-technical skills onto languages. Instead we
+// ask Groq to translate the JD into the best available GitHub query terms,
+// and clamp its language picks against a fixed valid-language set so it can't
+// suggest something GitHub search won't understand.
+
+const GITHUB_VALID_LANGUAGES = new Set([
+  "javascript", "typescript", "python", "java", "c", "c++", "c#", "go", "rust",
+  "ruby", "php", "swift", "kotlin", "dart", "scala", "r", "matlab", "perl",
+  "haskell", "elixir", "clojure", "shell", "powershell", "html", "css", "vue",
+  "jupyter notebook", "dockerfile", "solidity", "objective-c", "lua", "groovy", "julia",
+]);
+
+interface GitHubLanguagePlan {
+  language: string;   // real GitHub language, clamped to GITHUB_VALID_LANGUAGES
+  skills: string[];   // original skill strings this language is meant to represent
+}
+
+interface GitHubQueryPlan {
+  languages: GitHubLanguagePlan[];
+  keywords: string[]; // standalone bio/profile search terms — searched ONE AT A TIME, never AND'd
+}
+
+async function planGitHubQuery(
+  jobTitle: string,
+  mandatorySkills: string[],
+  mustHaveSkills: string[],
+  niceToHaveSkills: string[],
+  groqApiKey: string,
+): Promise<GitHubQueryPlan> {
+ const allSkills = getAllJDSkills(
+  mandatorySkills,
+  mustHaveSkills,
+  niceToHaveSkills,
+);
+
+
+  const prompt = `You are building GitHub user-search queries for a recruiter.
+
+Role: "${jobTitle}"
+Skills: ${JSON.stringify(allSkills)}
+
+GitHub user search only supports:
+- "language:X" — a repo-language qualifier, X must be a REAL programming language (e.g. "javascript", "python"). Only technical/programming roles should ever get language entries.
+- free-text keywords matched loosely against bio/name/company. Each additional word narrows results (AND logic), so keywords must be searched ONE AT A TIME, never combined into a single multi-word query.
+
+Task:
+1. "languages": ONLY if the role/skills are programming-related, map each skill that has
+   an underlying GitHub repo language to that language — e.g. React/Redux/Next.js/Node/Express/
+   Angular/Vue -> "javascript" and/or "typescript"; Django/Flask -> "python"; Spring -> "java".
+   Merge skills that map to the same language into ONE entry: {"language": "...", "skills": [...]}.
+   Max 3 entries. If the role is NOT programming-related (e.g. marketing, sales, design, HR,
+   finance, operations), return an EMPTY languages array — do not force-fit a language.
+2. "keywords": up to 4 short (1-2 word) high-signal bio search terms drawn directly from the
+   role and skills list — e.g. for a marketing role: "seo", "content marketing", "digital
+   marketing". For a technical role, use this for skills with no language equivalent (e.g.
+   "aws", "docker", "testing"). Never include generic filler words like "developer",
+   "engineer", "experience", "professional". Every keyword must correspond to something
+   actually in the role/skills list above — do not invent unrelated terms.
+
+Return ONLY valid JSON, nothing else:
+{"languages": [{"language": "string", "skills": ["string"]}], "keywords": ["string"]}`;
+
+  try {
+    const raw = await groqGenerate(prompt, {
+      apiKey: groqApiKey,
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.1,
+      maxTokens: 400,
+      responseFormat: { type: "json_object" },
+    });
+    const parsed = JSON.parse(raw);
+
+    const languages: GitHubLanguagePlan[] = Array.isArray(parsed.languages)
+      ? parsed.languages
+          .map((entry: unknown) => {
+            const e = entry as { language?: unknown; skills?: unknown };
+            return {
+              language: String(e?.language ?? "").toLowerCase().trim(),
+              // Only keep skills that are actually in the JD's own skill list —
+              // Groq shouldn't be inventing skill names here either.
+              skills: Array.isArray(e?.skills)
+                ? sanitizeToAllowedSkills(e.skills.map(String), allSkills)
+                : [],
+            };
+          })
+          .filter((e: GitHubLanguagePlan) => GITHUB_VALID_LANGUAGES.has(e.language) && e.skills.length > 0)
+          .slice(0, 3)
+      : [];
+
+    const keywords = Array.isArray(parsed.keywords)
+      ? [...new Set(parsed.keywords.map((k: unknown) => String(k).trim().toLowerCase()).filter(Boolean))].slice(0, 4) as string[]
+      : [];
+
+    if (languages.length === 0 && keywords.length === 0) {
+      throw new Error("Empty plan");
+    }
+    return { languages, keywords };
+  } catch (error) {
+    console.error("GitHub query planning failed, using fallback:", error instanceof Error ? error.message : error);
+    // Last-resort fallback: only ever use the JD's own skills/title as keywords —
+    // never invent or default to an unrelated skill set.
+    const naiveLangMap: Record<string, string> = {
+      javascript: "javascript", typescript: "typescript", react: "javascript",
+      nextjs: "typescript", nodejs: "javascript", angular: "typescript", vue: "javascript",
+      python: "python", java: "java",
+    };
+    const byLang = new Map<string, string[]>();
+    for (const s of allSkills) {
+      const lang = naiveLangMap[canonicalSkill(s)];
+      if (lang) byLang.set(lang, [...(byLang.get(lang) ?? []), s]);
+    }
+    const languages = [...byLang.entries()].map(([language, skills]) => ({ language, skills }));
+    const keywords = allSkills.filter((s) => !naiveLangMap[canonicalSkill(s)]).slice(0, 4);
+    return { languages, keywords };
+  }
+}
+
+interface GitHubUserSearchItem {
+  login: string;
+  html_url: string;
+}
+
+interface GitHubUserProfile {
+  login: string;
+  name: string | null;
+  company: string | null;
+  location: string | null;
+  bio: string | null;
+  blog: string | null;
+  public_repos: number;
+  followers: number;
+  html_url: string;
+}
+
+async function fetchGitHubJSON(
+  url: string,
+  headers: Record<string, string>,
+) {
+  const res = await fetch(url, { headers });
+
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  const limit = res.headers.get("x-ratelimit-limit");
+  const reset = res.headers.get("x-ratelimit-reset");
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error(
+        "Invalid GitHub token. Please check your GitHub API key.",
+      );
+    }
+
+    // GitHub uses 403 for the primary API rate limit.
+    if (res.status === 403 && remaining === "0") {
+      const resetAt = reset
+        ? new Date(Number(reset) * 1000)
+        : undefined;
+
+      const resetText = resetAt
+        ? ` Try again after ${resetAt.toLocaleTimeString()}.`
+        : "";
+
+      if (headers.Authorization) {
+        throw new Error(
+          `GitHub API rate limit reached.${resetText}`,
+        );
+      }
+
+      throw new Error(
+        `GitHub API rate limit reached for unauthenticated requests. Add a GitHub Personal Access Token to continue.${resetText}`,
+      );
+    }
+
+    // Some GitHub/API infrastructure can return 429.
+    if (res.status === 429) {
+      throw new Error(
+        "GitHub API rate limit exceeded. Add a GitHub Personal Access Token or try again later.",
+      );
+    }
+
+    if (res.status === 403) {
+      throw new Error(
+        "GitHub API request forbidden. Check your GitHub API key and permissions.",
+      );
+    }
+
+    const text = await res.text();
+
+    throw new Error(
+      `GitHub API error ${res.status}: ${text.slice(0, 200)}`,
+    );
+  }
+
+  const data = await res.json();
+
+return {
+  data,
+  rateLimitRemaining: remaining ? Number(remaining) : undefined,
+  rateLimitLimit: limit ? Number(limit) : undefined,
+  rateLimitReset: reset ? Number(reset) : undefined,
+};
+
+}
+
+
+async function searchGitHubAPI(
+  jobTitle: string,
+  mandatorySkills: string[],
+  mustHaveSkills: string[],
+  niceToHaveSkills: string[],
+  apiKey: string,
+  location: string = DEFAULT_LOCATION,
+  groqApiKey?: string,
+):  Promise<{
+  candidates: WebCandidate[];
+  totalFound: number;
+  warning?: string;
+}>  {
+  const allSkills = getAllJDSkills(
+  mandatorySkills,
+  mustHaveSkills,
+  niceToHaveSkills,
+);
+
+
+  if (!groqApiKey?.trim()) {
+    throw new Error("A Groq API key is required for GitHub search — it's used to translate the JD into an effective query and to clean up results.");
+  }
+
+  const plan = await planGitHubQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, groqApiKey.trim());
+
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+
+  // Each variant asserts exactly ONE signal — never AND multiple keywords
+  // together, since GitHub's q= parameter requires every bare word to
+  // literally co-occur, which almost never happens across several skills.
+  type QueryVariant = { q: string; confirmedSkills: string[] };
+  const variants: QueryVariant[] = [];
+
+  for (const entry of plan.languages) {
+    variants.push({
+      q: `type:user location:"${location}" language:${entry.language} repos:>=1`,
+      confirmedSkills: entry.skills,
+    });
+  }
+  for (const kw of plan.keywords) {
+    variants.push({
+      q: `type:user location:"${location}" ${kw} repos:>=1`,
+      confirmedSkills: [kw],
+    });
+  }
+  if (variants.length === 0) {
+    variants.push({ q: `type:user location:"${location}" ${jobTitle} repos:>=1`, confirmedSkills: [] });
+  }
+
+ const settled = await Promise.allSettled(
+  variants.map((v) =>
+    fetchGitHubJSON(
+      `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=15&sort=repositories&order=desc`,
+      headers,
+    ).then((result) => ({
+      data: result.data,
+      confirmedSkills: v.confirmedSkills,
+      rateLimitRemaining: result.rateLimitRemaining,
+      rateLimitLimit: result.rateLimitLimit,
+      rateLimitReset: result.rateLimitReset,
+    })),
+  ),
+);
+
+
+  const anySuccessWithItems = settled.some(
+    (r) => r.status === "fulfilled" && (r.value.data.items?.length ?? 0) > 0,
+  );
+
+  // Fallback: if every variant came back empty (over-narrow query), retry with
+  // just the strongest single language (or job title) and no other constraints.
+  let fallbackSettled: typeof settled = [];
+  if (!anySuccessWithItems) {
+    const primary = plan.languages[0];
+    const fallbackQ = primary
+      ? `type:user location:"${location}" language:${primary.language}`
+      : `type:user location:"${location}" ${jobTitle}`;
+  fallbackSettled = await Promise.allSettled([
+  fetchGitHubJSON(
+    `https://api.github.com/search/users?q=${encodeURIComponent(
+      fallbackQ
+    )}&per_page=15&sort=followers&order=desc`,
+    headers,
+  ).then((result) => ({
+    data: result.data,
+    confirmedSkills: primary?.skills ?? [],
+    rateLimitRemaining: result.rateLimitRemaining,
+    rateLimitLimit: result.rateLimitLimit,
+    rateLimitReset: result.rateLimitReset,
+  })),
+]);
+
+  }
+const allSettled = [...settled, ...fallbackSettled];
+
+// At this point at least one request succeeded.
+
+// ─── GitHub rate-limit warning ────────────────────────────────────────────────
+// ─── GitHub rate-limit warning ────────────────────────────────────────────────
+let githubWarning: string | undefined;
+
+const rateLimitInfo = allSettled
+  .filter((r) => r.status === "fulfilled")
+  .map((r) => r.value)
+  .find((r) => r.rateLimitRemaining !== undefined);
+
+if (!apiKey?.trim()) {
+  const remaining = rateLimitInfo?.rateLimitRemaining;
+  const limit = rateLimitInfo?.rateLimitLimit;
+
+  if (remaining !== undefined) {
+    githubWarning =
+      `GitHub search is using the unauthenticated API. ` +
+      `You have ${remaining}${limit !== undefined ? ` of ${limit}` : ""} ` +
+      `requests remaining. ` +
+      `Add a GitHub Personal Access Token for higher rate limits.`;
+  } else {
+    githubWarning =
+      "GitHub search is using the unauthenticated API. " +
+      "Add a GitHub Personal Access Token for higher rate limits.";
+  }
+}
+
+
+  let totalFound = 0;
+  const loginToConfirmedSkills = new Map<string, Set<string>>();
+  const items: GitHubUserSearchItem[] = [];
+  const seen = new Set<string>();
+
+  for (const r of allSettled) {
+    if (r.status !== "fulfilled") continue;
+    totalFound += r.value.data.total_count ?? 0;
+    for (const item of r.value.data.items ?? []) {
+      if (!seen.has(item.login)) { seen.add(item.login); items.push(item); }
+      const set = loginToConfirmedSkills.get(item.login) ?? new Set<string>();
+      r.value.confirmedSkills.forEach((s: string) => set.add(canonicalSkill(s)));
+      loginToConfirmedSkills.set(item.login, set);
+    }
+  }
+
+const profileSettled = await Promise.allSettled(
+  items.slice(0, 20).map((item) =>
+    fetchGitHubJSON(
+      `https://api.github.com/users/${item.login}`,
+      headers,
+    ),
+  ),
+);
+
+let candidates: WebCandidate[] = profileSettled
+  .filter((p) => p.status === "fulfilled")
+  .map((p) => p.value.data)
+  .map((p) => {
+
+      // confirmed skills come from which query variant(s) actually returned
+      // this user (e.g. language:javascript => react/javascript confirmed).
+      const confirmed = [...(loginToConfirmedSkills.get(p.login) ?? [])];
+      const combined = `${p.bio ?? ""} ${p.company ?? ""}`;
+      const bioMatched = matchSkillsInText(combined, allSkills);
+
+      // Hard sanitization: even though confirmed/bioMatched are already
+      // derived from allSkills, run the union through the allow-list filter
+      // as a guaranteed final gate before it's ever stored.
+      const matchedSkills = sanitizeToAllowedSkills([...bioMatched, ...confirmed], allSkills);
+      const missingSkills = allSkills.filter((s) => !matchedSkills.includes(canonicalSkill(s)));
+
+      const snippet = p.bio || [p.company, p.location, `${p.public_repos} public repos`].filter(Boolean).join(" · ");
+
+      // Scoring: confirmed signals (from the query itself) count far more
+      // than bio-text guesses. Followers act as a small tiebreaker only.
+      const skillRatio = allSkills.length > 0 ? matchedSkills.length / allSkills.length : 0;
+      const confirmedBonus = confirmed.length * 12;
+      const repoActivityBonus = Math.min(8, Math.round(p.public_repos / 30));
+      const followerBonus = Math.min(5, Math.round(Math.log10(p.followers + 1) * 2));
+      const score = Math.min(99, Math.round(skillRatio * 45 + confirmedBonus + repoActivityBonus + followerBonus + 5));
+
+      return {
+        id: `github-${p.login}`,
+        name: p.name?.trim() || p.login,
+        title: "Professional", // refined by Groq enrichment below from bio, when available
+        company: p.company?.replace(/^@/, "").trim() ?? "",
+        url: p.html_url,
+        source: "github" as const,
+        snippet: snippet.slice(0, 380),
+        rawSnippet:
+          `${p.bio ?? ""}\nCompany: ${p.company ?? ""}\nLocation: ${p.location ?? ""}\n` +
+          `Public repos: ${p.public_repos}\nFollowers: ${p.followers}`,
+        rawTitle: p.bio || p.name || p.login,
+        matchedSkills,
+        missingSkills,
+        relevanceScore: score,
+        location: p.location ?? undefined,
+        provider: "github" as const,
+      };
+    })
+    .sort((a, b) => b.relevanceScore - a.relevanceScore)
+    .slice(0, 15);
+
+  // GitHub bios are free text — Groq derives a clean title/summary from them,
+  // the same way it does for the scraped web-search providers. Its output is
+  // sanitized to allSkills inside enrichWebCandidatesWithGroq itself.
+  if (groqApiKey?.trim()) {
+    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills, groqApiKey.trim());
+  }
+
+  return {
+  candidates,
+  totalFound,
+  warning: githubWarning,
+};
+
+}
+
 // ─── Main handler ──────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
@@ -914,18 +1443,21 @@ export async function POST(req: NextRequest) {
       groqApiKey?: string;
     } = body;
 
-    if (!["pdl", "tavily", "exa", "serper"].includes(provider))
+    if (!["pdl", "tavily", "exa", "serper", "github"].includes(provider))
       return NextResponse.json({ error: "Invalid provider." }, { status: 400 });
-    if (!apiKey || apiKey.trim().length < 5)
+
+    // GitHub works unauthenticated (60 req/hr); only require an API key for
+    // the other web-search providers and PDL.
+    if (provider !== "github" && (!apiKey || apiKey.trim().length < 5))
       return NextResponse.json({ error: "API key is required." }, { status: 400 });
 
-    // Web-search providers scrape raw pages, not structured records — without
-    // Groq to clean names/titles/summaries and filter out non-candidate pages
-    // (job listings, company pages, etc.), results will contain garbled names
-    // and unprofessional "activity feed" text. Require it for these providers.
+    // Web-search providers (and GitHub) scrape/derive from raw profile data,
+    // not structured records — without Groq to build the query (GitHub) and
+    // clean names/titles/summaries and filter out non-candidate pages, results
+    // will contain garbled names, unrelated skills, and unprofessional text.
     if (provider !== "pdl" && (!groqApiKey || groqApiKey.trim().length < 10)) {
       return NextResponse.json(
-        { error: "A Groq API key is required for web-search providers (tavily/exa/serper) so results can be cleaned up and validated. PDL doesn't need it since it returns structured data directly." },
+        { error: "A Groq API key is required for tavily/exa/serper/github so a good search query can be built and results can be cleaned up and validated. PDL doesn't need it since it returns structured data directly." },
         { status: 400 },
       );
     }
@@ -973,10 +1505,26 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
 
-    let result: { candidates: WebCandidate[]; totalFound: number; creditsUsed?: number };
+let result: {
+  candidates: WebCandidate[];
+  totalFound: number;
+  creditsUsed?: number;
+  warning?: string;
+};
+
 
     if (provider === "pdl") {
       result = await searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills, apiKey.trim());
+    } else if (provider === "github") {
+      result = await searchGitHubAPI(
+        finalJobTitle,
+        finalMandatorySkills,
+        finalMustHaveSkills,
+        finalNiceToHaveSkills,
+        apiKey?.trim() ?? "",
+        DEFAULT_LOCATION,
+        groqApiKey.trim(),
+      );
     } else {
       result = await runWebSearch(
         provider,
@@ -990,14 +1538,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({
-      candidates: result.candidates,
-      totalFound: result.totalFound,
-      searchedAt: new Date().toISOString(),
-      provider,
-      creditsUsed: result.creditsUsed,
-      extractedJD,
-    } as CandidateSearchResponse);
+   return NextResponse.json({
+  candidates: result.candidates,
+  totalFound: result.totalFound,
+  searchedAt: new Date().toISOString(),
+  provider,
+  creditsUsed: result.creditsUsed,
+  warning: result.warning,
+  extractedJD,
+} as CandidateSearchResponse);
+
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";

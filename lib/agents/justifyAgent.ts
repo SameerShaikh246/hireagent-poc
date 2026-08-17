@@ -50,7 +50,7 @@ Return ONLY raw JSON — no markdown, no code fences:
 }`;
 
   try {
-    const rawText = await groqGenerate(prompt, { apiKey, maxTokens: 1000 });
+    const rawText = await groqGenerate(prompt, { apiKey, model: "llama-3.3-70b-versatile", maxTokens: 1000 });
 
     const jsonStr = rawText
       .replace(/```(?:json)?\s*/gi, "")

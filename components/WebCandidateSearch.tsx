@@ -17,10 +17,10 @@ export interface WebCandidate {
     location?: string;
     experienceYears?: number;
     education?: string;
-    provider: "pdl" | "tavily" | "exa" | "serper";
+    provider: "pdl" | "tavily" | "exa" | "serper" | "github";
 }
 
-type Provider = "pdl" | "tavily" | "exa" | "serper";
+type Provider = "pdl" | "tavily" | "exa" | "serper" | "github";
 
 interface ExtractedJD {
     jobTitle: string;
@@ -68,6 +68,20 @@ const PROVIDERS: Record<
         tip: "Structured database of 1.5B+ verified profiles with real skills, job history, education, and LinkedIn URLs. Not web scraping — actual person records. Best accuracy for both tech and non-tech roles.",
         isStructured: true,
         icon: "🗄️",
+    },
+    github: {
+        label: "GitHub",
+        free: "60/hr free, 5,000/hr with a token",
+        signupUrl: "https://github.com/settings/tokens",
+        placeholder: "ghp_… (optional — leave blank to use free tier)",
+        keyHint: "Optional. Settings → Developer settings → Personal access tokens → Generate (no scopes needed)",
+        bestFor: "Free • Technical roles",
+        badgeBg: "#dcfce7",
+        badgeColor: "#166534",
+        badgeBorder: "#86efac",
+        tip: "Searches real GitHub profiles by location + language + bio keywords, then pulls each profile's bio, company, and repo activity directly from GitHub's API. Completely free, no signup required — add a personal access token only if you hit the 60/hr rate limit.",
+        isStructured: false,
+        icon: "🐙",
     },
     tavily: {
         label: "Tavily",
@@ -562,6 +576,8 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
     >("all");
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [showSetup, setShowSetup] = useState(true);
+    const [warning, setWarning] = useState("");
+
     // What Groq inferred from a free-text JD, filled in after search
     const [extractedInfo, setExtractedInfo] = useState<ExtractedJD | null>(null);
 
@@ -590,11 +606,11 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
 
     const meta = PROVIDERS[provider];
 
+    const apiKeyOk = provider === "github" ? true : apiKey.trim().length > 4;
+
     const canSearch = isFreeText
-        ? apiKey.trim().length > 4 &&
-        groqApiKey.trim().length > 10 &&
-        jdText.trim().length >= 20
-        : apiKey.trim().length > 4 &&
+        ? apiKeyOk && groqApiKey.trim().length > 10 && jdText.trim().length >= 20
+        : apiKeyOk &&
         (structuredJD.title.trim().length > 0 ||
             structuredJD.mustHaveSkills.length > 0 ||
             structuredJD.mandatorySkills.length > 0);
@@ -628,6 +644,7 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
             setSearchedAt(data.searchedAt);
             setCreditsUsed(data.creditsUsed);
             setExtractedInfo(data.extractedJD ?? null);
+            setWarning(data.warning ?? null);
             setShowSetup(false);
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Unknown error");
@@ -679,14 +696,26 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
                             Choose provider
                         </div>
 
-                        {/* Provider cards — PDL on top row, web fallbacks on second */}
+                        {/* Provider cards — free options first, then paid web fallbacks */}
                         <div className="flex flex-col gap-2 mb-4">
+                            <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest mt-1">
+                                Free options
+                            </div>
                             <div className="flex gap-2">
                                 <ProviderCard
                                     id="pdl"
                                     selected={provider === "pdl"}
                                     onSelect={() => {
                                         setProvider("pdl");
+                                        setApiKey("");
+                                        setError("");
+                                    }}
+                                />
+                                <ProviderCard
+                                    id="github"
+                                    selected={provider === "github"}
+                                    onSelect={() => {
+                                        setProvider("github");
                                         setApiKey("");
                                         setError("");
                                     }}
@@ -781,7 +810,7 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
 
                     {!canSearch && (
                         <p className="text-[12px] text-(--text-muted) text-center">
-                            {!apiKey.trim()
+                            {!apiKeyOk
                                 ? `Paste your ${meta.label} API key above`
                                 : isFreeText
                                     ? !groqApiKey.trim()
@@ -841,6 +870,22 @@ export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqA
             {/* ── Results ── */}
             {results && (
                 <div className="flex flex-col gap-4">
+
+                    {warning && (
+                        <div className="flex items-start gap-2.5 px-4 py-3 bg-[#fffbeb] border border-[#fcd34d] rounded-lg text-[12px] text-[#92400e]">
+                            <span className="text-[15px] shrink-0">⚠️</span>
+
+                            <div>
+                                <div className="font-semibold mb-0.5">
+                                    Warning
+                                </div>
+                                <div className="leading-relaxed">
+                                    {warning}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* stats */}
                     <div className="grid grid-cols-4 gap-3">
                         {[

@@ -16,7 +16,7 @@ export async function groqGenerate(
     apiKey,
     maxTokens = 1000,
     temperature = 0.1,
-    model = "llama-3.3-70b-versatile",
+    model = "llama-3.1-8b-instant", // "llama-3.3-70b-versatile"
     responseFormat,
   } = options;
 

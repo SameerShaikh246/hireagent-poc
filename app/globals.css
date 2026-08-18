@@ -1,50 +1,132 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #f8f7f4;
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #fbf8f4;
   --surface: #ffffff;
-  --border: #e5e3de;
-  --text-primary: #1a1917;
-  --text-secondary: #6b6860;
-  --text-muted: #9c9a95;
-  --accent: #2563eb;
-  --accent-light: #eff6ff;
-  --accent-hover: #1d4ed8;
-  --success: #16a34a;
-  --success-light: #f0fdf4;
-  --warning: #d97706;
-  --warning-light: #fffbeb;
-  --danger: #dc2626;
-  --danger-light: #fef2f2;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow: 0 4px 12px rgba(0,0,0,0.08);
+  --surface-hover: #f5f1ea;
+  --border: #e8e2d8;
+  --border-strong: #d8cfc0;
+
+  /* Text */
+  --text-primary: #211d18;
+  --text-secondary: #6e6458;
+  --text-muted: #a79d8e;
+
+  /* Accent — warm rose/berry */
+  --accent: #c2416b;
+  --accent-hover: #a8365a;
+  --accent-light: #fbe7ed;
+  --accent-contrast: #ffffff;
+
+  /* Secondary accent — muted teal, used sparingly (links, info states) */
+  --secondary: #2b6f6b;
+  --secondary-light: #e6f2f1;
+
+  /* Semantic */
+  --success: #2e7d4f;
+  --success-light: #e9f7ee;
+  --warning: #b5790a;
+  --warning-light: #fdf3df;
+  --danger: #c23b32;
+  --danger-light: #fceae8;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  /* Elevation — warm-tinted, low contrast */
+  --shadow-sm: 0 1px 2px rgba(33, 29, 24, 0.05), 0 1px 3px rgba(33, 29, 24, 0.04);
+  --shadow: 0 8px 24px rgba(33, 29, 24, 0.08);
+  --shadow-lg: 0 16px 40px rgba(33, 29, 24, 0.14);
+
+  /* Fonts (fallback chain if next/font vars aren't present yet) */
+  --font-display: var(--font-display-src, "Sora"), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-body-src, "Inter"), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-src, "IBM Plex Mono"), ui-monospace, "SF Mono", monospace;
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #17140f;
+  --surface: #201b15;
+  --surface-hover: #29231c;
+  --border: #342c22;
+  --border-strong: #453a2c;
+
+  --text-primary: #f6f1e9;
+  --text-secondary: #c7bcaa;
+  --text-muted: #897d6b;
+
+  --accent: #e5678e;
+  --accent-hover: #ef7c9f;
+  --accent-light: #3a2029;
+  --accent-contrast: #17140f;
+
+  --secondary: #4fa39d;
+  --secondary-light: #16302e;
+
+  --success: #4caf77;
+  --success-light: #16281e;
+  --warning: #e0a83a;
+  --warning-light: #2e2413;
+  --danger: #e2665a;
+  --danger-light: #2e1b18;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--bg);
+  --color-foreground: var(--text-primary);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  border-color: var(--border);
+}
+
+html {
+  color-scheme: light dark;
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   background: var(--bg);
   color: var(--text-primary);
   line-height: 1.6;
   font-size: 14px;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
+h1, h2, h3, h4, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+/* Numeric/data figures (scores, API keys, counts) read better in mono */
+.font-data {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+
+/* Visible keyboard focus everywhere — not just inputs */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -61,3 +143,11 @@ body {
 }
 
 .fade-in { animation: fadeIn 0.3s ease forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import ThemeToggle from "@/components/theme/ThemeToggle";
 
 type HeaderProps = {
     title?: string;
@@ -29,7 +30,7 @@ export default function Header({
                     )}
                 </div>
             </div>
-
+            <ThemeToggle />
             <div className="flex items-center gap-3">
                 {/* Convert CV Button */}
                 <Link href="/convert-cv">

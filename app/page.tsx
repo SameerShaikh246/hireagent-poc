@@ -7,23 +7,19 @@ import type {
   ScreeningResponse,
   StructuredJD,
 } from "@/types";
-import JobDescriptionForm, {
+import {
   buildJDText,
 } from "@/components/JobDescriptionForm";
-import ResumeUploader from "@/components/ResumeUploader";
 import ProcessingScreen from "@/components/ProcessingScreen";
-import WebCandidateSearch from "@/components/WebCandidateSearch";
 import {
   BarChart3,
-  Trophy,
   CheckCircle,
   ClipboardList,
   XCircle,
-  Search,
-  Upload,
 } from "lucide-react";
 import JDIntelligencePanel from "@/components/JDIntelligencePanel";
 import Header from "@/components/Header";
+import ScreeningSetup from "@/components/ScreeningSetup";
 
 type View = "setup" | "processing" | "results";
 type SetupTab = "upload" | "web-search";
@@ -665,214 +661,23 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-(--bg)">
       <Header subtitle="Agentic AI Resume Screener" />
-
-      <div className="max-w-4xl mx-auto py-8 px-5">
-        <div className="text-center mb-9">
-          <h1 className="text-3xl font-bold mb-2 text-(--text-primary)">
-            Screen Resume Instantly
-          </h1>
-          <p className="text-(--text-secondary) max-w-[440px] text-sm mx-auto">
-            Upload up to 20 resumes and a job description. A 5-agent AI pipeline
-            will analyse, parse, score, justify and rank candidates
-            automatically.
-          </p>
-          <div className="flex gap-2 justify-center mt-4 flex-wrap">
-            {[
-              { icon: "📄", label: "Parse Agent" },
-              { icon: "→", label: "", plain: true },
-              { icon: "🚫", label: "Mandatory Filter" },
-              { icon: "→", label: "", plain: true },
-              { icon: "📊", label: "Score Agent" },
-              { icon: "→", label: "", plain: true },
-              { icon: "🤖", label: "Justify Agent" },
-              { icon: "→", label: "", plain: true },
-              { icon: "🏆", label: "Ranked Shortlist" },
-            ].map((b, i) =>
-              b.plain ? (
-                <span key={i} className="text-(--text-muted) text-sm">
-                  {b.icon}
-                </span>
-              ) : (
-                <span
-                  key={i}
-                  className="text-[12px] px-[10px] py-1 bg-(--surface) border border-(--border) rounded-full text-(--text-secondary)"
-                >
-                  {b.icon} {b.label}
-                </span>
-              ),
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <div className="bg-[#fef2f2] border border-[#fca5a5] rounded-(--radius) px-4 py-3 mb-5 text-[13px] text-(--danger)">
-            ⚠️ {error}
-          </div>
-        )}
-
-        <div className="flex flex-col gap-4">
-          {/* API Key */}
-          <div className="bg-(--surface) border border-(--border) rounded-(--radius-lg) p-5 shadow-(--shadow-sm)">
-            <div className="flex items-center gap-[10px] mb-3">
-              <div className="w-8 h-8 rounded-[8px] bg-[#fff7ed] flex items-center justify-center">
-                🔑
-              </div>
-              <div>
-                <div className="font-semibold text-[14px]">Groq API Key</div>
-                <div className="text-[12px] text-(--text-muted)">
-                  Get a free key at{" "}
-                  <a
-                    href="https://console.groq.com/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-(--accent)"
-                  >
-                    console.groq.com
-                  </a>
-                </div>
-              </div>
-            </div>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="gsk_..."
-              className="w-full border border-(--border) rounded-(--radius) px-3 py-2.5 text-[13px] font-mono text-(--text-primary) bg-(--bg) outline-none focus:border-(--accent)"
-            />
-          </div>
-
-          <JobDescriptionForm
-            mode={jdMode}
-            onModeChange={setJdMode}
-            structured={structuredJD}
-            onStructuredChange={setStructuredJD}
-            freeText={freeTextJD}
-            onFreeTextChange={setFreeTextJD}
-            disabled={false}
-            apiKey={apiKey}
-          />
-
-          {/* ── Mode tabs: Upload CVs vs Web Search ── */}
-          <div className="bg-(--surface) border border-(--border) rounded-(--radius-lg) overflow-hidden shadow-(--shadow-sm)">
-            {/* Tab bar */}
-            <div className="flex border-b border-(--border)">
-              <button
-                onClick={() => setSetupTab("upload")}
-                className="flex-1 flex items-center justify-center gap-2 py-3 text-[13px] font-semibold border-none cursor-pointer transition-colors"
-                style={{
-                  background:
-                    setupTab === "upload"
-                      ? "var(--accent-light)"
-                      : "transparent",
-                  color:
-                    setupTab === "upload"
-                      ? "var(--accent)"
-                      : "var(--text-muted)",
-                  borderBottom:
-                    setupTab === "upload"
-                      ? "2px solid var(--accent)"
-                      : "2px solid transparent",
-                }}
-              >
-                <Upload className="w-4 h-4" />
-                Upload Resumes
-              </button>
-              <button
-                onClick={() => setSetupTab("web-search")}
-                className="flex-1 flex items-center justify-center gap-2 py-3 text-[13px] font-semibold border-none cursor-pointer transition-colors"
-                style={{
-                  background:
-                    setupTab === "web-search"
-                      ? "#eff6ff"
-                      : "transparent",
-                  color:
-                    setupTab === "web-search"
-                      ? "#2563eb"
-                      : "var(--text-muted)",
-                  borderBottom:
-                    setupTab === "web-search"
-                      ? "2px solid #2563eb"
-                      : "2px solid transparent",
-                }}
-              >
-                <Search className="w-4 h-4" />
-                Find Candidates Online
-                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#dcfce7] text-[#15803d] border border-[#86efac]">
-                  New
-                </span>
-              </button>
-            </div>
-
-            {/* Tab content */}
-            <div className="p-4">
-              {setupTab === "upload" ? (
-                <ResumeUploader files={files} onChange={setFiles} />
-              ) : (
-                <WebCandidateSearch
-                  structuredJD={structuredJD}
-                  jdText={jdText}
-                  jdMode={jdMode}
-                  groqApiKey={apiKey}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Screen button — only shown on upload tab */}
-          {setupTab === "upload" && (
-            <>
-              <button
-                onClick={runScreening}
-                disabled={!canSubmit}
-                className="w-full py-3.5 rounded-xl text-white font-semibold text-[15px] border-none tracking-[-0.01em] transition-colors duration-150"
-                style={{
-                  background: canSubmit ? "var(--accent)" : "#93c5fd",
-                  cursor: canSubmit ? "pointer" : "not-allowed",
-                }}
-                onMouseEnter={(e) => {
-                  if (canSubmit)
-                    (e.target as HTMLButtonElement).style.background =
-                      "var(--accent-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  if (canSubmit)
-                    (e.target as HTMLButtonElement).style.background =
-                      "var(--accent)";
-                }}
-              >
-                Screen{" "}
-                {files.length > 0
-                  ? `${files.length} Resume${files.length > 1 ? "s" : ""}`
-                  : "Resumes"}
-              </button>
-
-              {!canSubmit && (
-                <p className="text-center text-[12px] text-(--text-muted) -mt-2">
-                  {!apiKey ? "Add your Groq API key · " : ""}
-                  {files.length === 0 ? "Upload at least one resume" : ""}
-                </p>
-              )}
-            </>
-          )}
-
-          {/* Web search tip */}
-          {setupTab === "web-search" && (
-            <div className="flex items-start gap-3 px-4 py-3 bg-[#fffbeb] border border-[#fde68a] rounded-(--radius-lg) text-[12px] text-[#92400e]">
-              <span className="text-[16px] shrink-0">💡</span>
-              <div>
-                <span className="font-semibold">Tip:</span> Web search finds publicly available candidate profiles from LinkedIn, GitHub, and portfolios. To screen uploaded resumes with AI scoring, switch to the{" "}
-                <button
-                  onClick={() => setSetupTab("upload")}
-                  className="text-(--accent) underline bg-transparent border-none cursor-pointer p-0"
-                >
-                  Upload Resumes
-                </button>{" "}
-                tab.
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      <ScreeningSetup
+        error={error}
+        apiKey={apiKey}
+        onApiKeyChange={setApiKey}
+        jdMode={jdMode}
+        onJdModeChange={setJdMode}
+        structuredJD={structuredJD}
+        onStructuredJDChange={setStructuredJD}
+        freeTextJD={freeTextJD}
+        onFreeTextJDChange={setFreeTextJD}
+        setupTab={setupTab}
+        onSetupTabChange={setSetupTab}
+        files={files}
+        onFilesChange={setFiles}
+        canSubmit={canSubmit}
+        onRunScreening={runScreening}
+      />
     </div>
   );
 }

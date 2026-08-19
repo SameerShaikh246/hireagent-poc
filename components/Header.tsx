@@ -1,7 +1,7 @@
 "use client";
-
 import Image from "next/image";
 import Link from "next/link";
+import { ArrowLeft, Wand2 } from "lucide-react";
 import ThemeToggle from "@/components/theme/ThemeToggle";
 
 type HeaderProps = {
@@ -18,36 +18,54 @@ export default function Header({
     onBack,
 }: HeaderProps) {
     return (
-        <header className="bg-(--surface) border-b border-(--border) px-6 h-14 flex items-center justify-between">
+        <header
+            className="sticky top-0 z-50 border-b px-6 h-16 flex items-center justify-between backdrop-blur-md"
+            style={{
+                background: "color-mix(in srgb, var(--surface) 88%, transparent)",
+                borderColor: "var(--border)",
+            }}
+        >
             <div className="flex items-center gap-3">
-                <Image src="/icons/robot.svg" alt="Logo" width={40} height={40} />
-                <div>
-                    <span className="font-bold text-[15px] text-(--text-primary)">
-                        {title}
-                    </span>
-                    {subtitle && (
-                        <span className="text-xs text-(--text-muted) ml-2">{subtitle}</span>
-                    )}
-                </div>
+                {showBack ? (
+                    <button
+                        onClick={onBack}
+                        aria-label="Back"
+                        className="flex items-center gap-1.5 text-[13px] font-medium border-none bg-transparent cursor-pointer px-1 py-1.5 rounded-(--radius-sm) transition-opacity hover:opacity-70"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        <ArrowLeft size={16} strokeWidth={2.25} />
+                    </button>
+                ) : null}
+
+                <Link href="/" className="flex items-center gap-2.5">
+                    <Image src="/icons/robot.svg" alt="" width={32} height={32} />
+                    <div className="flex items-baseline gap-2">
+                        <span className="font-display font-semibold text-[16px] text-(--text-primary)">
+                            {title}
+                        </span>
+                        {subtitle && (
+                            <span className="text-[12px] text-(--text-muted) hidden sm:inline">
+                                {subtitle}
+                            </span>
+                        )}
+                    </div>
+                </Link>
             </div>
-            <ThemeToggle />
+
             <div className="flex items-center gap-3">
-                {/* Convert CV Button */}
                 <Link href="/convert-cv">
-                    <button className="text-[13px] text-white bg-(--accent) rounded-(--radius) px-[14px] py-1 cursor-pointer font-medium hover:bg-(--accent-hover)">
+                    <button
+                        className="flex items-center gap-1.5 text-[13px] font-medium rounded-(--radius) px-[14px] py-[7px] border-none cursor-pointer transition-opacity hover:opacity-90"
+                        style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+                    >
+                        <Wand2 size={14} strokeWidth={2.25} />
                         Convert CV
                     </button>
                 </Link>
 
-                {/* Back button */}
-                {showBack && (
-                    <button
-                        onClick={onBack}
-                        className="text-[13px] text-(--accent) bg-(--accent-light) border border-[#bfdbfe] rounded-(--radius) px-[14px] py-1 cursor-pointer font-medium"
-                    >
-                        Back
-                    </button>
-                )}
+                <div className="w-px h-5" style={{ background: "var(--border)" }} />
+
+                <ThemeToggle />
             </div>
         </header>
     );

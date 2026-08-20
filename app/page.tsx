@@ -3,9 +3,7 @@ import { useState } from "react";
 import Image from "next/image";
 import type {
   CandidateResult,
-  JDMode,
   ScreeningResponse,
-  StructuredJD,
 } from "@/types";
 import {
   buildJDText,
@@ -20,9 +18,9 @@ import {
 import JDIntelligencePanel from "@/components/JDIntelligencePanel";
 import Header from "@/components/Header";
 import ScreeningSetup from "@/components/ScreeningSetup";
+import { useJD } from "@/context/JDContext";
 
 type View = "setup" | "processing" | "results";
-type SetupTab = "upload" | "web-search";
 
 const recommendationStyle = (rec: string) => {
   switch (rec) {
@@ -363,9 +361,6 @@ function CandidateCard({
 
 export default function Home() {
   const [view, setView] = useState<View>("setup");
-  const [setupTab, setSetupTab] = useState<SetupTab>("upload");
-  const [jdMode, setJdMode] = useState<JDMode>("structured");
-  const [apiKey, setApiKey] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [results, setResults] = useState<ScreeningResponse | null>(null);
   const [error, setError] = useState("");
@@ -373,28 +368,7 @@ export default function Home() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showDisqualified, setShowDisqualified] = useState(false);
 
-  const [structuredJD, setStructuredJD] = useState<StructuredJD>({
-    title: "",
-    department: "",
-    roleType: "technical",
-    employmentType: "full-time",
-    mandatorySkills: [],
-    mustHaveSkills: [],
-    niceToHaveSkills: [],
-    responsibilities: "",
-    experienceRange: { min: 3, max: 6 },
-    educationRequired: "bachelor",
-  });
-  const [freeTextJD, setFreeTextJD] = useState("");
-
-  const canSubmit =
-    files.length > 0 &&
-    apiKey.trim().length > 10 &&
-    (jdMode === "freetext"
-      ? freeTextJD.trim().length >= 20
-      : structuredJD.title.trim().length > 0 &&
-      structuredJD.mustHaveSkills.length > 0);
-
+  const { jdMode, structuredJD, freeTextJD, groqApiKey } = useJD();
   const runScreening = async () => {
     setError("");
     setView("processing");
@@ -429,7 +403,7 @@ export default function Home() {
       );
       formData.append("educationRequired", structuredJD.educationRequired);
     }
-    formData.append("apiKey", apiKey);
+    formData.append("apiKey", groqApiKey);
     files.forEach((f) => formData.append("resumes", f));
 
     const interval = setInterval(() => {
@@ -484,7 +458,6 @@ export default function Home() {
   };
 
   // RESULTS VIEW
-  const jdText = jdMode === "structured" ? buildJDText(structuredJD) : freeTextJD;
 
   if (view === "results" && results) {
     const shortlisted = results.candidates.filter((c) =>
@@ -663,19 +636,8 @@ export default function Home() {
       <Header subtitle="Agentic AI Resume Screener" />
       <ScreeningSetup
         error={error}
-        apiKey={apiKey}
-        onApiKeyChange={setApiKey}
-        jdMode={jdMode}
-        onJdModeChange={setJdMode}
-        structuredJD={structuredJD}
-        onStructuredJDChange={setStructuredJD}
-        freeTextJD={freeTextJD}
-        onFreeTextJDChange={setFreeTextJD}
-        setupTab={setupTab}
-        onSetupTabChange={setSetupTab}
         files={files}
         onFilesChange={setFiles}
-        canSubmit={canSubmit}
         onRunScreening={runScreening}
       />
     </div>

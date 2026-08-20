@@ -94,7 +94,7 @@ CRITICAL Rules — read carefully:
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b", // "llama-3.3-70b-versatile"
       messages: [{ role: "user", content: prompt }],
       max_tokens: 4000,
       temperature: 0.1,

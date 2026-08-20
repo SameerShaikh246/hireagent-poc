@@ -1,4 +1,6 @@
 "use client";
+import { useState } from "react";
+import Link from "next/link";
 import {
     FileText,
     Ban,
@@ -10,31 +12,19 @@ import {
     Upload,
     Search,
     AlertCircle,
-    Lightbulb,
     ExternalLink,
+    Globe,
 } from "lucide-react";
-import type { JDMode, StructuredJD } from "@/types";
-import JobDescriptionForm, { buildJDText } from "@/components/JobDescriptionForm";
+import JobDescriptionForm from "@/components/JobDescriptionForm";
 import ResumeUploader from "@/components/ResumeUploader";
-import WebCandidateSearch from "@/components/WebCandidateSearch";
+import { useJD } from "@/context/JDContext";
 
 type SetupTab = "upload" | "web-search";
 
 interface Props {
     error: string;
-    apiKey: string;
-    onApiKeyChange: (v: string) => void;
-    jdMode: JDMode;
-    onJdModeChange: (m: JDMode) => void;
-    structuredJD: StructuredJD;
-    onStructuredJDChange: (jd: StructuredJD) => void;
-    freeTextJD: string;
-    onFreeTextJDChange: (v: string) => void;
-    setupTab: SetupTab;
-    onSetupTabChange: (t: SetupTab) => void;
     files: File[];
     onFilesChange: (f: File[]) => void;
-    canSubmit: boolean;
     onRunScreening: () => void;
 }
 
@@ -60,24 +50,26 @@ function StepLabel({ n, children }: { n: number; children: React.ReactNode }) {
     );
 }
 
-export default function ScreeningSetup({
-    error,
-    apiKey,
-    onApiKeyChange,
-    jdMode,
-    onJdModeChange,
-    structuredJD,
-    onStructuredJDChange,
-    freeTextJD,
-    onFreeTextJDChange,
-    setupTab,
-    onSetupTabChange,
-    files,
-    onFilesChange,
-    canSubmit,
-    onRunScreening,
-}: Props) {
-    const jdText = jdMode === "structured" ? buildJDText(structuredJD) : freeTextJD;
+export default function ScreeningSetup({ error, files, onFilesChange, onRunScreening }: Props) {
+    const {
+        jdMode, setJdMode,
+        structuredJD, setStructuredJD,
+        freeTextJD, setFreeTextJD,
+        groqApiKey, setGroqApiKey,
+    } = useJD();
+
+    const [setupTab, setSetupTab] = useState<SetupTab>("upload");
+
+    const canSubmit =
+        files.length > 0 &&
+        groqApiKey.trim().length > 10 &&
+        (jdMode === "freetext"
+            ? freeTextJD.trim().length >= 20
+            : structuredJD.title.trim().length > 0 && structuredJD.mustHaveSkills.length > 0);
+
+    const structuredSkills = [
+        ...new Set([...structuredJD.mandatorySkills, ...structuredJD.mustHaveSkills, ...structuredJD.niceToHaveSkills]),
+    ];
 
     return (
         <div className="max-w-4xl mx-auto py-10 px-5">
@@ -99,13 +91,9 @@ export default function ScreeningSetup({
                         <div key={step.label} className="flex items-center gap-1">
                             <div className="flex items-center gap-1.5 px-2.5 py-1.5">
                                 <step.icon size={14} strokeWidth={2} color="var(--secondary)" />
-                                <span className="text-[12px] font-medium text-(--text-secondary)">
-                                    {step.label}
-                                </span>
+                                <span className="text-[12px] font-medium text-(--text-secondary)">{step.label}</span>
                             </div>
-                            {i < PIPELINE.length - 1 && (
-                                <ArrowRight size={13} strokeWidth={2} color="var(--text-muted)" />
-                            )}
+                            {i < PIPELINE.length - 1 && <ArrowRight size={13} strokeWidth={2} color="var(--text-muted)" />}
                         </div>
                     ))}
                 </div>
@@ -114,11 +102,7 @@ export default function ScreeningSetup({
             {error && (
                 <div
                     className="flex items-start gap-2.5 rounded-(--radius) px-4 py-3 mb-6 text-[13px]"
-                    style={{
-                        background: "var(--danger-light)",
-                        border: "1px solid var(--danger)",
-                        color: "var(--danger)",
-                    }}
+                    style={{ background: "var(--danger-light)", border: "1px solid var(--danger)", color: "var(--danger)" }}
                 >
                     <AlertCircle size={16} strokeWidth={2.25} className="shrink-0 mt-0.5" />
                     <span>{error}</span>
@@ -153,8 +137,8 @@ export default function ScreeningSetup({
                     </div>
                     <input
                         type="password"
-                        value={apiKey}
-                        onChange={(e) => onApiKeyChange(e.target.value)}
+                        value={groqApiKey}
+                        onChange={(e) => setGroqApiKey(e.target.value)}
                         placeholder="gsk_..."
                         className="w-full border rounded-(--radius) px-3 py-2.5 text-[13px] font-data text-(--text-primary) outline-none transition-colors"
                         style={{ background: "var(--bg)", borderColor: "var(--border)" }}
@@ -166,13 +150,13 @@ export default function ScreeningSetup({
                     <StepLabel n={2}>Job description</StepLabel>
                     <JobDescriptionForm
                         mode={jdMode}
-                        onModeChange={onJdModeChange}
+                        onModeChange={setJdMode}
                         structured={structuredJD}
-                        onStructuredChange={onStructuredJDChange}
+                        onStructuredChange={setStructuredJD}
                         freeText={freeTextJD}
-                        onFreeTextChange={onFreeTextJDChange}
+                        onFreeTextChange={setFreeTextJD}
                         disabled={false}
-                        apiKey={apiKey}
+                        apiKey={groqApiKey}
                     />
                 </div>
 
@@ -186,7 +170,7 @@ export default function ScreeningSetup({
                         <div className="flex border-b" style={{ borderColor: "var(--border)" }}>
                             {(
                                 [
-                                    { key: "upload", label: "Upload resumes", icon: Upload, badge: undefined },
+                                    { key: "upload", label: "Upload resumes", icon: Upload },
                                     { key: "web-search", label: "Find candidates online", icon: Search, badge: "New" },
                                 ] as const
                             ).map((tab) => {
@@ -194,16 +178,13 @@ export default function ScreeningSetup({
                                 return (
                                     <button
                                         key={tab.key}
-                                        onClick={() => onSetupTabChange(tab.key)}
+                                        onClick={() => setSetupTab(tab.key)}
                                         className="flex-1 flex items-center justify-center gap-2 py-3 text-[13px] font-semibold border-none cursor-pointer transition-colors"
                                         style={{
                                             background: active ? "var(--accent-light)" : "transparent",
                                             color: active ? "var(--accent)" : "var(--text-muted)",
-                                            borderBottom: active
-                                                ? "2px solid var(--accent)"
-                                                : "2px solid transparent",
+                                            borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
                                         }}
-                                        type="button"
                                     >
                                         <tab.icon size={15} strokeWidth={2.25} />
                                         {tab.label}
@@ -224,12 +205,32 @@ export default function ScreeningSetup({
                             {setupTab === "upload" ? (
                                 <ResumeUploader files={files} onChange={onFilesChange} />
                             ) : (
-                                <WebCandidateSearch
-                                    structuredJD={structuredJD}
-                                    jdText={jdText}
-                                    jdMode={jdMode}
-                                    groqApiKey={apiKey}
-                                />
+                                <div className="flex flex-col items-center text-center py-8 px-4">
+                                    <div
+                                        className="w-11 h-11 rounded-full flex items-center justify-center mb-3"
+                                        style={{ background: "var(--accent-light)" }}
+                                    >
+                                        <Globe size={20} strokeWidth={1.75} color="var(--accent)" />
+                                    </div>
+                                    <p className="text-[13px] text-(--text-secondary) max-w-[360px] mb-1">
+                                        Search LinkedIn, GitHub, and portfolio profiles using the job
+                                        description above.
+                                    </p>
+                                    {structuredSkills.length > 0 && jdMode === "structured" && (
+                                        <p className="text-[11px] text-(--text-muted) mb-4">
+                                            {structuredJD.title || "Untitled role"} · {structuredSkills.slice(0, 4).join(", ")}
+                                            {structuredSkills.length > 4 ? " …" : ""}
+                                        </p>
+                                    )}
+                                    <Link
+                                        href="/search"
+                                        className="flex items-center gap-1.5 text-[13px] font-semibold rounded-lg px-4 py-2 no-underline"
+                                        style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+                                    >
+                                        Continue to candidate search
+                                        <ArrowRight size={14} strokeWidth={2.25} />
+                                    </Link>
+                                </div>
                             )}
                         </div>
                     </div>
@@ -247,48 +248,16 @@ export default function ScreeningSetup({
                                 color: canSubmit ? "var(--accent-contrast)" : "var(--text-muted)",
                                 cursor: canSubmit ? "pointer" : "not-allowed",
                             }}
-                            type="button"
                         >
-                            Screen{" "}
-                            {files.length > 0
-                                ? `${files.length} Resume${files.length > 1 ? "s" : ""}`
-                                : "Resumes"}
+                            Screen {files.length > 0 ? `${files.length} Resume${files.length > 1 ? "s" : ""}` : "Resumes"}
                         </button>
 
                         {!canSubmit && (
                             <p className="text-center text-[12px] text-(--text-muted) mt-2">
-                                {!apiKey ? "Add your Groq API key · " : ""}
+                                {!groqApiKey ? "Add your Groq API key · " : ""}
                                 {files.length === 0 ? "Upload at least one resume" : ""}
                             </p>
                         )}
-                    </div>
-                )}
-
-                {setupTab === "web-search" && (
-                    <div
-                        className="flex items-start gap-3 px-4 py-3 rounded-(--radius-lg) text-[12px]"
-                        style={{
-                            background: "var(--warning-light)",
-                            border: "1px solid var(--warning)",
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        <Lightbulb size={16} strokeWidth={2} className="shrink-0 mt-0.5" color="var(--warning)" />
-                        <div>
-                            <span className="font-semibold" style={{ color: "var(--warning)" }}>
-                                Tip:
-                            </span>{" "}
-                            Web search finds publicly available candidate profiles from
-                            LinkedIn, GitHub, and portfolios. To screen uploaded resumes with
-                            AI scoring, switch to the{" "}
-                            <button
-                                onClick={() => onSetupTabChange("upload")}
-                                className="text-(--accent) underline bg-transparent border-none cursor-pointer p-0"
-                            >
-                                Upload resumes
-                            </button>{" "}
-                            tab.
-                        </div>
                     </div>
                 )}
             </div>

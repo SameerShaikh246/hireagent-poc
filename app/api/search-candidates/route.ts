@@ -194,9 +194,10 @@ Job description:
 
   const raw = await groqGenerate(prompt, {
     apiKey: groqApiKey,
-    model: "llama-3.3-70b-versatile",
+    model: "openai/gpt-oss-20b",
     temperature: 0.1,
     maxTokens: 800,
+    reasoningFormat: "hidden",
     responseFormat: {
       type: "json_object",
     },
@@ -385,9 +386,10 @@ ${JSON.stringify(input, null, 2)}
   try {
     const raw = await groqGenerate(prompt, {
       apiKey: groqApiKey.trim(),
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       temperature: 0.1,
       maxTokens: 5000,
+      reasoningFormat: "hidden",
       responseFormat: {
         type: "json_object",
       },
@@ -972,7 +974,7 @@ async function runWebSearch(
     .filter((r) => isUsefulWebResult(r.url, r.title, r.snippet))
     .map((r, i) => webResultToCandidate(r, i, allSkills, provider))
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 15);
+    .slice(0, 10);
 
   // Enhance names, titles, companies and summaries with Groq, and drop any
   // results that turn out not to be real individual candidates.
@@ -1060,9 +1062,10 @@ Return ONLY valid JSON, nothing else:
   try {
     const raw = await groqGenerate(prompt, {
       apiKey: groqApiKey,
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-20b",
       temperature: 0.1,
       maxTokens: 400,
+      reasoningFormat: "hidden",
       responseFormat: { type: "json_object" },
     });
     const parsed = JSON.parse(raw);
@@ -1256,7 +1259,7 @@ async function searchGitHubAPI(
  const settled = await Promise.allSettled(
   variants.map((v) =>
     fetchGitHubJSON(
-      `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=15&sort=repositories&order=desc`,
+      `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=10&sort=repositories&order=desc`,
       headers,
     ).then((result) => ({
       data: result.data,
@@ -1285,7 +1288,7 @@ async function searchGitHubAPI(
   fetchGitHubJSON(
     `https://api.github.com/search/users?q=${encodeURIComponent(
       fallbackQ
-    )}&per_page=15&sort=followers&order=desc`,
+    )}&per_page=10&sort=followers&order=desc`,
     headers,
   ).then((result) => ({
     data: result.data,
@@ -1400,7 +1403,7 @@ let candidates: WebCandidate[] = profileSettled
       };
     })
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 15);
+    .slice(0, 10);
 
   // GitHub bios are free text — Groq derives a clean title/summary from them,
   // the same way it does for the scraped web-search providers. Its output is

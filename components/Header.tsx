@@ -9,6 +9,7 @@ type HeaderProps = {
     subtitle?: string;
     showBack?: boolean;
     onBack?: () => void;
+    backHref?: string;
 };
 
 export default function Header({
@@ -16,7 +17,12 @@ export default function Header({
     subtitle,
     showBack = false,
     onBack,
+    backHref,
 }: HeaderProps) {
+    const backButtonClass =
+        "flex items-center gap-1.5 text-[13px] font-medium border-none bg-transparent cursor-pointer px-1 py-1.5 rounded-(--radius-sm) transition-opacity hover:opacity-70";
+    const backButtonStyle = { color: "var(--text-secondary)" } as const;
+
     return (
         <header
             className="sticky top-0 z-50 border-b px-6 h-16 flex items-center justify-between backdrop-blur-md"
@@ -26,13 +32,12 @@ export default function Header({
             }}
         >
             <div className="flex items-center gap-3">
-                {showBack ? (
-                    <button
-                        onClick={onBack}
-                        aria-label="Back"
-                        className="flex items-center gap-1.5 text-[13px] font-medium border-none bg-transparent cursor-pointer px-1 py-1.5 rounded-(--radius-sm) transition-opacity hover:opacity-70"
-                        style={{ color: "var(--text-secondary)" }}
-                    >
+                {showBack && backHref ? (
+                    <Link href={backHref} aria-label="Back" className={backButtonClass} style={backButtonStyle}>
+                        <ArrowLeft size={16} strokeWidth={2.25} />
+                    </Link>
+                ) : showBack ? (
+                    <button onClick={onBack} aria-label="Back" className={backButtonClass} style={backButtonStyle}>
                         <ArrowLeft size={16} strokeWidth={2.25} />
                     </button>
                 ) : null}

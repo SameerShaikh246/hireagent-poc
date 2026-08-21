@@ -170,7 +170,7 @@ export default function ScreeningSetup({ error, files, onFilesChange, onRunScree
                         <div className="flex border-b" style={{ borderColor: "var(--border)" }}>
                             {(
                                 [
-                                    { key: "upload", label: "Upload resumes", icon: Upload },
+                                    { key: "upload", label: "Upload resumes", icon: Upload, badge: undefined },
                                     { key: "web-search", label: "Find candidates online", icon: Search, badge: "New" },
                                 ] as const
                             ).map((tab) => {
@@ -191,11 +191,15 @@ export default function ScreeningSetup({ error, files, onFilesChange, onRunScree
                                         {tab.badge && (
                                             <span
                                                 className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                                                style={{ background: "var(--success-light)", color: "var(--success)" }}
+                                                style={{
+                                                    background: "var(--success-light)",
+                                                    color: "var(--success)",
+                                                }}
                                             >
                                                 {tab.badge}
                                             </span>
                                         )}
+
                                     </button>
                                 );
                             })}

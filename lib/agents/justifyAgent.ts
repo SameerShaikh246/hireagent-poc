@@ -50,7 +50,13 @@ Return ONLY raw JSON — no markdown, no code fences:
 }`;
 
   try {
-    const rawText = await groqGenerate(prompt, { apiKey, model: "openai/gpt-oss-120b", maxTokens: 1000 });
+    const rawText = await groqGenerate(prompt, {
+      apiKey,
+      model: "openai/gpt-oss-120b",
+      maxTokens: 1000,
+      responseFormat: { type: "json_object" },
+    });
+
 
     const jsonStr = rawText
       .replace(/```(?:json)?\s*/gi, "")

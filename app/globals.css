@@ -9,6 +9,8 @@
   --surface-hover: #f5f1ea;
   --border: #e8e2d8;
   --border-strong: #d8cfc0;
+  --info: #1d4ed8;
+  --info-light: #dbeafe;
 
   /* Text */
   --text-primary: #211d18;
@@ -58,7 +60,9 @@
   --surface-hover: #29231c;
   --border: #342c22;
   --border-strong: #453a2c;
-
+  --info: #6ea8fe;
+  --info-light: #1c2b4a;
+  
   --text-primary: #f6f1e9;
   --text-secondary: #c7bcaa;
   --text-muted: #897d6b;
@@ -81,6 +85,7 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.2);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
+
 }
 
 @theme inline {

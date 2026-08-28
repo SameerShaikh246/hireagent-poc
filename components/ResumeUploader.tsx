@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import JSZip from "jszip";
+import { FolderUp } from "lucide-react";
 
 interface Props {
   files: File[];
@@ -58,15 +59,15 @@ export default function ResumeUploader({ files, onChange, disabled }: Props) {
   };
 
   const fileIcon = (name: string) => {
-    if (name.endsWith(".pdf")) return { label: "PDF", color: "#dc2626", bg: "#fef2f2" };
-    if (name.endsWith(".docx")) return { label: "DOC", color: "#2563eb", bg: "#eff6ff" };
-    return { label: "TXT", color: "#6b6860", bg: "#f3f2ef" };
+    if (name.endsWith(".pdf")) return { label: "PDF", color: "var(--danger)", bg: "var(--danger-light)" };
+    if (name.endsWith(".docx")) return { label: "DOC", color: "var(--info)", bg: "var(--info-light)" };
+    return { label: "TXT", color: "var(--text-secondary)", bg: "var(--surface-hover)" };
   };
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)] p-5 shadow-[var(--shadow-sm)]">
       <div className="flex items-center gap-2.5 mb-3">
-        <div className="w-8 h-8 rounded-[8px] bg-[#f0fdf4] flex items-center justify-center">
+        <div className="w-8 h-8 rounded-[8px] flex items-center justify-center" style={{ background: "var(--success-light)" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
           </svg>
@@ -85,7 +86,12 @@ export default function ResumeUploader({ files, onChange, disabled }: Props) {
         className={`border-2 border-dashed rounded-[var(--radius)] px-4 py-6 text-center transition-all ${dragging ? "border-[var(--accent)] bg-[var(--accent-light)]" : "border-[var(--border)] bg-[var(--bg)]"
           } ${disabled ? "cursor-not-allowed" : "cursor-pointer"} ${files.length > 0 ? "mb-3" : ""}`}
       >
-        <div className="text-2xl mb-1">📂</div>
+        <FolderUp
+          size={26}
+          strokeWidth={1.5}
+          color={dragging ? "var(--accent)" : "var(--text-muted)"}
+          className="mx-auto mb-1.5"
+        />
         <div className="text-[13px] text-[var(--text-secondary)] font-medium">
           {dragging ? "Drop files here" : "Click or drag & drop resumes"}
         </div>

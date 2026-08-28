@@ -122,12 +122,6 @@ export type SkillSuggestion = {
   reason: string;
 };
 
-export type SkillSuggestions = {
-  mandatory: SkillSuggestion[];
-  mustHave: SkillSuggestion[];
-  niceToHave: SkillSuggestion[];
-};
-
 export type ParsedResume = {
   fileName: string;
   rawText: string;

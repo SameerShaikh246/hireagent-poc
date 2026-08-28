@@ -1,4 +1,5 @@
 "use client";
+import { BrainCircuit, Plus, Minus, Shuffle, PenLine, CalendarClock, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { JDIntelligenceResult } from "@/types";
 
 interface Props {
@@ -6,31 +7,32 @@ interface Props {
   defaultOpen?: boolean;
 }
 
-const changeIcon: Record<string, string> = {
-  added: "➕",
-  removed: "➖",
-  reclassified: "🔀",
-  normalized: "✏️",
-  experience_adjusted: "📅",
+const changeIcon: Record<string, LucideIcon> = {
+  added: Plus,
+  removed: Minus,
+  reclassified: Shuffle,
+  normalized: PenLine,
+  experience_adjusted: CalendarClock,
 };
 
 const changeColor: Record<string, string> = {
-  added: "#16a34a",
-  removed: "#dc2626",
-  reclassified: "#d97706",
-  normalized: "#2563eb",
-  experience_adjusted: "#7c3aed",
+  added: "var(--success)",
+  removed: "var(--danger)",
+  reclassified: "var(--warning)",
+  normalized: "var(--info)",
+  experience_adjusted: "var(--accent)",
 };
 
 export default function JDIntelligencePanel({ result, defaultOpen = false }: Props) {
-  const hasChanges = result.changes.length > 0 || result.warnings.length > 0;
   const confidencePct = Math.round(result.confidence * 100);
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)] overflow-hidden shadow-[var(--shadow-sm)]">
       {/* Header */}
-      <div className="flex items-center gap-3 px-5 py-4 bg-gradient-to-r from-[#fefce8] to-[var(--surface)]">
-        <span className="text-xl">🧠</span>
+      <div className="flex items-center gap-3 px-5 py-4" style={{ background: "var(--accent-light)" }}>
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: "var(--surface)" }}>
+          <BrainCircuit size={16} strokeWidth={2} color="var(--accent)" />
+        </div>
         <div className="flex-1">
           <div className="font-semibold text-[14px] text-[var(--text-primary)]">
             JD Intelligence Agent
@@ -41,8 +43,8 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
         </div>
         <div className="text-center">
           <div
-            className="text-[18px] font-bold"
-            style={{ color: confidencePct >= 80 ? "#16a34a" : confidencePct >= 60 ? "#d97706" : "#dc2626" }}
+            className="text-[18px] font-bold font-data"
+            style={{ color: confidencePct >= 80 ? "var(--success)" : confidencePct >= 60 ? "var(--warning)" : "var(--danger)" }}
           >
             {confidencePct}%
           </div>
@@ -51,9 +53,9 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
         <span
           className="text-[11px] font-semibold px-2 py-1 rounded-full border"
           style={{
-            background: result.roleType === "technical" ? "#dbeafe" : "#fce7f3",
-            color: result.roleType === "technical" ? "#1d4ed8" : "#be185d",
-            borderColor: result.roleType === "technical" ? "#93c5fd" : "#f9a8d4",
+            background: result.roleType === "technical" ? "var(--info-light)" : "var(--accent-light)",
+            color: result.roleType === "technical" ? "var(--info)" : "var(--accent)",
+            borderColor: "transparent",
           }}
         >
           {result.roleType}
@@ -71,7 +73,8 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
               result.originalMustHave.map((s) => (
                 <span
                   key={s}
-                  className="text-[11px] px-2 py-0.5 rounded-full border bg-[#f3f4f6] text-[#6b7280] border-[#d1d5db]"
+                  className="text-[11px] px-2 py-0.5 rounded-full border"
+                  style={{ background: "var(--surface-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}
                 >
                   {s}
                 </span>
@@ -93,9 +96,9 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
                   key={s}
                   className="text-[11px] px-2 py-0.5 rounded-full border"
                   style={{
-                    background: isNew ? "#dcfce7" : "#E1F5EE",
-                    color: isNew ? "#15803d" : "#0F6E56",
-                    borderColor: isNew ? "#86efac" : "#5DCAA5",
+                    background: isNew ? "var(--success-light)" : "var(--accent-light)",
+                    color: isNew ? "var(--success)" : "var(--accent)",
+                    borderColor: "transparent",
                   }}
                 >
                   {isNew ? "✦ " : ""}{s}
@@ -108,12 +111,13 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
 
       {/* Warnings */}
       {result.warnings.length > 0 && (
-        <div className="px-5 py-3 border-t border-[var(--border)] bg-[#fffbeb]">
-          <div className="text-[11px] font-semibold text-[#92400e] uppercase tracking-wider mb-2">
-            ⚠️ Warnings
+        <div className="px-5 py-3 border-t border-[var(--border)]" style={{ background: "var(--warning-light)" }}>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--warning)" }}>
+            <TriangleAlert size={12} strokeWidth={2.25} />
+            Warnings
           </div>
           {result.warnings.map((w, i) => (
-            <div key={i} className="text-[12px] text-[#78350f] mb-1">
+            <div key={i} className="text-[12px] mb-1" style={{ color: "var(--text-secondary)" }}>
               {w}
             </div>
           ))}
@@ -127,19 +131,22 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
             Changes applied
           </div>
           <div className="flex flex-col gap-2">
-            {result.changes.map((c, i) => (
-              <div key={i} className="flex items-start gap-2 text-[12px]">
-                <span className="text-[13px] mt-0.5">{changeIcon[c.type] ?? "•"}</span>
-                <div>
-                  <span style={{ color: changeColor[c.type] ?? "inherit", fontWeight: 500 }}>
-                    {c.type.replace("_", " ")}
-                    {c.skill ? `: "${c.skill}"` : ""}
-                    {c.from && c.to ? ` (${c.from} → ${c.to})` : ""}
-                  </span>
-                  <span className="text-[var(--text-secondary)] ml-1">— {c.reason}</span>
+            {result.changes.map((c, i) => {
+              const Icon = changeIcon[c.type] ?? Plus;
+              return (
+                <div key={i} className="flex items-start gap-2 text-[12px]">
+                  <Icon size={13} strokeWidth={2.25} className="mt-0.5 shrink-0" color={changeColor[c.type] ?? "var(--text-secondary)"} />
+                  <div>
+                    <span style={{ color: changeColor[c.type] ?? "inherit", fontWeight: 500 }}>
+                      {c.type.replace("_", " ")}
+                      {c.skill ? `: "${c.skill}"` : ""}
+                      {c.from && c.to ? ` (${c.from} → ${c.to})` : ""}
+                    </span>
+                    <span className="text-[var(--text-secondary)] ml-1">— {c.reason}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

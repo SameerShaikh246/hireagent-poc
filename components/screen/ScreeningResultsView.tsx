@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { BarChart3, CheckCircle, ClipboardList, XCircle, RotateCcw, Ban } from "lucide-react";
+import { BarChart3, CheckCircle, ClipboardList, XCircle, RotateCcw, Ban, ChevronDown } from "lucide-react";
 import { useScreening } from "@/context/ScreeningContext";
 import JDIntelligencePanel from "@/components/JDIntelligencePanel";
 import ScreeningResultCard from "./ScreeningResultCard";
@@ -69,20 +69,24 @@ export default function ScreeningResultsView() {
 
             {/* Mandatory skills used */}
             {results.mandatorySkills?.length > 0 && (
-                <div className="flex items-center gap-3 px-4 py-3 mb-6 bg-[#FCEBEB] border border-[#F09595] rounded-[var(--radius-lg)]">
-                    <Ban size={15} strokeWidth={2} color="#A32D2D" className="shrink-0" />
-                    <span className="text-[13px] font-semibold text-[#A32D2D]">Mandatory filter applied:</span>
+                <div
+                    className="flex items-center gap-3 px-4 py-3 mb-6 rounded-[var(--radius-lg)]"
+                    style={{ background: "var(--danger-light)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
+                >
+                    <Ban size={15} strokeWidth={2} color="var(--danger)" className="shrink-0" />
+                    <span className="text-[13px] font-semibold" style={{ color: "var(--danger)" }}>Mandatory filter applied:</span>
                     <div className="flex flex-wrap gap-1.5">
                         {results.mandatorySkills.map((s) => (
                             <span
                                 key={s}
-                                className="text-[12px] px-2 py-0.5 bg-[#FCEBEB] text-[#791F1F] border border-[#F09595] rounded-full font-medium"
+                                className="text-[12px] px-2 py-0.5 rounded-full font-medium"
+                                style={{ background: "var(--surface)", color: "var(--danger)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
                             >
                                 {s}
                             </span>
                         ))}
                     </div>
-                    <span className="text-[12px] text-[#A32D2D] ml-auto">
+                    <span className="text-[12px] ml-auto" style={{ color: "var(--danger)" }}>
                         {dqCount} candidate{dqCount !== 1 ? "s" : ""} removed
                     </span>
                 </div>
@@ -118,18 +122,18 @@ export default function ScreeningResultsView() {
                 <div className="mt-8">
                     <button
                         onClick={() => setShowDisqualified((v) => !v)}
-                        className="w-full flex items-center justify-between px-5 py-3 bg-[#fee2e2] border border-[#fca5a5] rounded-[var(--radius-lg)] cursor-pointer text-left"
+                        className="w-full flex items-center justify-between px-5 py-3 rounded-[var(--radius-lg)] cursor-pointer text-left"
+                        style={{ background: "var(--danger-light)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
                     >
-                        <span className="text-[13px] font-semibold text-[#991b1b] flex items-center gap-2">
+                        <span className="text-[13px] font-semibold flex items-center gap-2" style={{ color: "var(--danger)" }}>
                             <Ban size={14} strokeWidth={2.25} />
                             {dqCount} disqualified candidate{dqCount !== 1 ? "s" : ""} (missing mandatory skills)
                         </span>
-                        <span
-                            className="text-[12px] text-[#991b1b] transition-transform duration-200"
-                            style={{ transform: showDisqualified ? "rotate(180deg)" : "none" }}
-                        >
-                            ▼
-                        </span>
+                        <ChevronDown
+                            size={14}
+                            strokeWidth={2.25}
+                            style={{ color: "var(--danger)", transform: showDisqualified ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+                        />
                     </button>
 
                     {showDisqualified && (

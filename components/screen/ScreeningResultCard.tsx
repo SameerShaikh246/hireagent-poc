@@ -1,29 +1,42 @@
 "use client";
+import { Trophy, Medal, XCircle, Ban, ThumbsUp, ThumbsDown, ChevronDown } from "lucide-react";
 import type { CandidateResult, ScreeningResponse } from "@/types";
-
-const recommendationStyle = (rec: string) => {
-    switch (rec) {
-        case "Strong Yes":
-            return { bg: "#dcfce7", color: "#15803d", border: "#86efac" };
-        case "Yes":
-            return { bg: "#dbeafe", color: "#1d4ed8", border: "#93c5fd" };
-        case "Maybe":
-            return { bg: "#fef9c3", color: "#854d0e", border: "#fde047" };
-        case "No":
-            return { bg: "#fee2e2", color: "#991b1b", border: "#fca5a5" };
-        default:
-            return { bg: "#f3f4f6", color: "#374151", border: "#d1d5db" };
-    }
-};
+import { toneStyle, recommendationTone } from "@/lib/badgeTones";
 
 const ScoreBar = ({ value, max, color }: { value: number; max: number; color: string }) => (
-    <div className="h-1.5 bg-[#e5e3de] rounded-full overflow-hidden">
+    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
         <div
             style={{ width: `${(value / max) * 100}%`, background: color, transition: "width 0.6s ease" }}
             className="h-full rounded-full"
         />
     </div>
 );
+
+function RankBadge({ rank, disqualified }: { rank: number; disqualified?: boolean }) {
+    if (disqualified)
+        return (
+            <div className="w-8 h-8 rounded-[8px] border border-(--border) flex items-center justify-center shrink-0" style={{ background: "var(--danger-light)" }}>
+                <XCircle size={15} strokeWidth={2} color="var(--danger)" />
+            </div>
+        );
+    if (rank === 1)
+        return (
+            <div className="w-8 h-8 rounded-[8px] border border-(--border) flex items-center justify-center shrink-0" style={{ background: "var(--warning-light)" }}>
+                <Trophy size={15} strokeWidth={2} color="var(--warning)" />
+            </div>
+        );
+    if (rank === 2 || rank === 3)
+        return (
+            <div className="w-8 h-8 rounded-[8px] border border-(--border) flex items-center justify-center shrink-0" style={{ background: "var(--surface-hover)" }}>
+                <Medal size={15} strokeWidth={2} color="var(--text-secondary)" />
+            </div>
+        );
+    return (
+        <div className="w-8 h-8 rounded-[8px] border border-(--border) flex items-center justify-center font-bold text-[12px] font-data shrink-0 text-(--text-muted)" style={{ background: "var(--bg)" }}>
+            #{rank}
+        </div>
+    );
+}
 
 export default function ScreeningResultCard({
     c,
@@ -38,32 +51,19 @@ export default function ScreeningResultCard({
     results: ScreeningResponse;
     isDisqualified?: boolean;
 }) {
-    const rec = recommendationStyle(c.aiAssessment.recommendation);
+    const rec = toneStyle(recommendationTone(c.aiAssessment.recommendation));
     const isOpen = expandedId === c.id;
 
     return (
         <div
-            className={`fade-in bg-(--surface) border rounded-(--radius-lg) shadow-(--shadow-sm) overflow-hidden ${isDisqualified ? "border-[#fca5a5] opacity-80" : "border-(--border)"}`}
+            className={`fade-in bg-(--surface) border rounded-(--radius-lg) shadow-(--shadow-sm) overflow-hidden ${isDisqualified ? "opacity-80" : "border-(--border)"}`}
+            style={isDisqualified ? { borderColor: "color-mix(in srgb, var(--danger) 40%, transparent)" } : undefined}
         >
             <div
                 onClick={() => setExpandedId(isOpen ? null : c.id)}
                 className="flex items-center gap-[14px] px-[18px] py-[14px] cursor-pointer select-none"
             >
-                <div
-                    className="w-8 h-8 rounded-[8px] border border-(--border) flex items-center justify-center font-bold text-[13px] shrink-0"
-                    style={{
-                        background: isDisqualified
-                            ? "#fee2e2"
-                            : c.rank === 1
-                                ? "#fef9c3"
-                                : c.rank === 2
-                                    ? "#f1f5f9"
-                                    : "var(--bg)",
-                        color: isDisqualified ? "#991b1b" : c.rank <= 3 ? "var(--text-primary)" : "var(--text-muted)",
-                    }}
-                >
-                    {isDisqualified ? "✗" : c.rank === 1 ? "🥇" : c.rank === 2 ? "🥈" : c.rank === 3 ? "🥉" : `#${c.rank}`}
-                </div>
+                <RankBadge rank={c.rank} disqualified={isDisqualified} />
                 <div className="flex-1 min-w-0">
                     <div className="font-semibold text-[14px] text-(--text-primary) overflow-hidden text-ellipsis whitespace-nowrap">
                         {c.fileName.replace(/\.[^.]+$/, "")}
@@ -79,7 +79,7 @@ export default function ScreeningResultCard({
                         className="text-[20px] font-bold font-data"
                         style={{
                             color: isDisqualified
-                                ? "#991b1b"
+                                ? "var(--danger)"
                                 : c.finalScore >= 70
                                     ? "var(--success)"
                                     : c.finalScore >= 50
@@ -92,7 +92,10 @@ export default function ScreeningResultCard({
                     <div className="text-[10px] text-(--text-muted)">{isDisqualified ? "" : "/ 100"}</div>
                 </div>
                 {isDisqualified ? (
-                    <span className="text-[11px] font-semibold px-[10px] py-1 rounded-full shrink-0 bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5]">
+                    <span
+                        className="text-[11px] font-semibold px-[10px] py-1 rounded-full shrink-0"
+                        style={{ background: "var(--danger-light)", color: "var(--danger)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
+                    >
                         Disqualified
                     </span>
                 ) : (
@@ -103,26 +106,31 @@ export default function ScreeningResultCard({
                         {c.aiAssessment.recommendation}
                     </span>
                 )}
-                <span
-                    className="text-(--text-muted) text-[12px] shrink-0 transition-transform duration-200"
+                <ChevronDown
+                    size={14}
+                    strokeWidth={2.25}
+                    className="text-(--text-muted) shrink-0 transition-transform duration-200"
                     style={{ transform: isOpen ? "rotate(180deg)" : "none" }}
-                >
-                    ▼
-                </span>
+                />
             </div>
 
             {isOpen && (
                 <div className="border-t border-(--border) p-[18px] bg-(--bg)">
                     {isDisqualified ? (
                         <div>
-                            <div className="flex items-start gap-3 p-4 bg-[#fee2e2] border border-[#fca5a5] rounded-[var(--radius)] mb-4">
-                                <span className="text-[20px]">🚫</span>
+                            <div
+                                className="flex items-start gap-3 p-4 rounded-[var(--radius)] mb-4"
+                                style={{ background: "var(--danger-light)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
+                            >
+                                <Ban size={18} strokeWidth={2} color="var(--danger)" className="shrink-0 mt-0.5" />
                                 <div>
-                                    <div className="font-semibold text-[14px] text-[#991b1b] mb-1">Automatically disqualified</div>
-                                    <p className="text-[13px] text-[#991b1b]">
+                                    <div className="font-semibold text-[14px] mb-1" style={{ color: "var(--danger)" }}>
+                                        Automatically disqualified
+                                    </div>
+                                    <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
                                         This candidate was removed before scoring because they are missing the following mandatory skill
                                         {c.ruleScore.missingMandatorySkills.length > 1 ? "s" : ""}:
-                                        <strong> {c.ruleScore.missingMandatorySkills.join(", ")}</strong>. Mandatory skills are hard
+                                        <strong style={{ color: "var(--danger)" }}> {c.ruleScore.missingMandatorySkills.join(", ")}</strong>. Mandatory skills are hard
                                         filters — no exceptions.
                                     </p>
                                 </div>
@@ -134,7 +142,8 @@ export default function ScreeningResultCard({
                                         {c.ruleScore.matchedSkills.map((s) => (
                                             <span
                                                 key={s}
-                                                className="text-[11px] px-2 py-[3px] bg-(--accent-light) text-(--accent) rounded-full border border-[#bfdbfe]"
+                                                className="text-[11px] px-2 py-[3px] bg-(--accent-light) text-(--accent) rounded-full border"
+                                                style={{ borderColor: "color-mix(in srgb, var(--accent) 35%, transparent)" }}
                                             >
                                                 {s}
                                             </span>
@@ -150,10 +159,10 @@ export default function ScreeningResultCard({
                                     Score Breakdown
                                 </div>
                                 {[
-                                    { label: "Skill Match", value: c.ruleScore.skillScore, max: results.customWeights?.skills ?? 30, color: "#3b82f6" },
-                                    { label: "Experience", value: c.ruleScore.experienceScore, max: results.customWeights?.experience ?? 25, color: "#2563eb" },
-                                    { label: "Education", value: c.ruleScore.educationScore, max: results.customWeights?.education ?? 10, color: "#f59e0b" },
-                                    { label: "Role Fit (AI)", value: c.aiAssessment.roleFitScore, max: 100, color: "#10b981" },
+                                    { label: "Skill Match", value: c.ruleScore.skillScore, max: results.customWeights?.skills ?? 30, color: "var(--accent)" },
+                                    { label: "Experience", value: c.ruleScore.experienceScore, max: results.customWeights?.experience ?? 25, color: "var(--info)" },
+                                    { label: "Education", value: c.ruleScore.educationScore, max: results.customWeights?.education ?? 10, color: "var(--warning)" },
+                                    { label: "Role Fit (AI)", value: c.aiAssessment.roleFitScore, max: 100, color: "var(--success)" },
                                 ].map((s) => (
                                     <div key={s.label} className="mb-[10px]">
                                         <div className="flex justify-between text-[12px] mb-1">
@@ -173,7 +182,11 @@ export default function ScreeningResultCard({
                                             {c.ruleScore.matchedSkills.map((s) => {
                                                 const mult = results.skillMultipliers?.[s];
                                                 return (
-                                                    <span key={s} className="text-[11px] px-2 py-[3px] bg-(--accent-light) text-(--accent) rounded-full border border-[#bfdbfe]">
+                                                    <span
+                                                        key={s}
+                                                        className="text-[11px] px-2 py-[3px] bg-(--accent-light) text-(--accent) rounded-full border"
+                                                        style={{ borderColor: "color-mix(in srgb, var(--accent) 35%, transparent)" }}
+                                                    >
                                                         {s}
                                                         {mult !== undefined && mult !== 1.0 ? ` ×${mult.toFixed(1)}` : ""}
                                                     </span>
@@ -188,7 +201,11 @@ export default function ScreeningResultCard({
                                         <div className="text-[11px] font-semibold text-(--text-muted) mb-1">Missing JD Skills</div>
                                         <div className="flex flex-wrap gap-1">
                                             {c.ruleScore.missingSkills.slice(0, 8).map((s) => (
-                                                <span key={s} className="text-[10px] bg-[#fee2e2] text-[#991b1b] border border-[#fca5a5] rounded-full px-2 py-0.5">
+                                                <span
+                                                    key={s}
+                                                    className="text-[10px] rounded-full px-2 py-0.5"
+                                                    style={{ background: "var(--danger-light)", color: "var(--danger)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
+                                                >
                                                     {s}
                                                 </span>
                                             ))}
@@ -204,7 +221,9 @@ export default function ScreeningResultCard({
                                 <p className="text-[12px] text-(--text-secondary) leading-relaxed mb-3">{c.aiAssessment.explanation}</p>
                                 <div className="grid grid-cols-2 gap-[10px] mb-3">
                                     <div>
-                                        <div className="text-[11px] font-semibold text-(--success) mb-[6px]">✓ Strengths</div>
+                                        <div className="text-[11px] font-semibold mb-[6px]" style={{ color: "var(--success)" }}>
+                                            ✓ Strengths
+                                        </div>
                                         {c.aiAssessment.strengths.map((s, i) => (
                                             <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">
                                                 {s}
@@ -212,7 +231,9 @@ export default function ScreeningResultCard({
                                         ))}
                                     </div>
                                     <div>
-                                        <div className="text-[11px] font-semibold text-(--danger) mb-[6px]">✗ Gaps</div>
+                                        <div className="text-[11px] font-semibold mb-[6px]" style={{ color: "var(--danger)" }}>
+                                            ✗ Gaps
+                                        </div>
                                         {c.aiAssessment.gaps.map((g, i) => (
                                             <div key={i} className="text-[11px] text-(--text-secondary) py-[3px] border-b border-(--border) leading-snug">
                                                 {g}
@@ -223,15 +244,21 @@ export default function ScreeningResultCard({
                                 {(c.aiAssessment.whySelect || c.aiAssessment.whyNotSelect) && (
                                     <div className="grid grid-cols-2 gap-[10px]">
                                         {c.aiAssessment.whySelect && (
-                                            <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-[6px] p-[10px_12px]">
-                                                <div className="text-[11px] font-bold text-(--success) mb-[5px]">👍 Why Select</div>
-                                                <p className="text-[11px] text-[#166534] leading-snug">{c.aiAssessment.whySelect}</p>
+                                            <div className="rounded-[6px] p-[10px_12px]" style={{ background: "var(--success-light)" }}>
+                                                <div className="flex items-center gap-1.5 text-[11px] font-bold mb-[5px]" style={{ color: "var(--success)" }}>
+                                                    <ThumbsUp size={12} strokeWidth={2.25} />
+                                                    Why Select
+                                                </div>
+                                                <p className="text-[11px] leading-snug" style={{ color: "var(--text-secondary)" }}>{c.aiAssessment.whySelect}</p>
                                             </div>
                                         )}
                                         {c.aiAssessment.whyNotSelect && (
-                                            <div className="bg-[#fff7ed] border border-[#fed7aa] rounded-[6px] p-[10px_12px]">
-                                                <div className="text-[11px] font-bold text-[#c2410c] mb-[5px]">👎 Why Not Select</div>
-                                                <p className="text-[11px] text-[#9a3412] leading-snug">{c.aiAssessment.whyNotSelect}</p>
+                                            <div className="rounded-[6px] p-[10px_12px]" style={{ background: "var(--warning-light)" }}>
+                                                <div className="flex items-center gap-1.5 text-[11px] font-bold mb-[5px]" style={{ color: "var(--warning)" }}>
+                                                    <ThumbsDown size={12} strokeWidth={2.25} />
+                                                    Why Not Select
+                                                </div>
+                                                <p className="text-[11px] leading-snug" style={{ color: "var(--text-secondary)" }}>{c.aiAssessment.whyNotSelect}</p>
                                             </div>
                                         )}
                                     </div>

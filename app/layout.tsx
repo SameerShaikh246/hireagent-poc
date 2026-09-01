@@ -3,6 +3,7 @@ import { Inter, Sora, IBM_Plex_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { JDProvider } from "@/context/JDContext";
 import { WebSearchProvider } from "@/context/WebSearchContext";
+import { ScreeningProvider } from "@/context/ScreeningContext";
 import "./globals.css";
 
 const inter = Inter({
@@ -46,7 +47,9 @@ export default async function RootLayout({
       <body suppressHydrationWarning>
         <ThemeProvider initialTheme={theme}>
           <JDProvider>
-            <WebSearchProvider>{children}</WebSearchProvider>
+            <ScreeningProvider>
+              <WebSearchProvider>{children}</WebSearchProvider>
+            </ScreeningProvider>
           </JDProvider>
         </ThemeProvider>
       </body>

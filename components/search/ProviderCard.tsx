@@ -1,7 +1,7 @@
 "use client";
 import { Database, Code2, Search, Brain, Globe, type LucideIcon } from "lucide-react";
 import type { Provider } from "@/lib/webSearchTypes";
-import { PROVIDERS } from "@/lib/searchProviders";
+import { PROVIDERS, toneStyle } from "@/lib/searchProviders";
 
 const ICONS: Record<string, LucideIcon> = {
     database: Database,
@@ -22,6 +22,7 @@ export default function ProviderCard({
 }) {
     const p = PROVIDERS[id];
     const Icon = ICONS[p.icon] ?? Globe;
+    const badge = toneStyle(p.tone);
 
     return (
         <div
@@ -42,12 +43,12 @@ export default function ProviderCard({
                             background: selected ? "var(--accent)" : "transparent",
                         }}
                     />
-                    <Icon size={14} strokeWidth={2.25} color="var(--text-secondary)" />
+                    <Icon size={13} strokeWidth={2.25} color="var(--text-secondary)" />
                     <span className="font-semibold text-[12px] text-(--text-primary)">{p.label}</span>
                 </div>
                 <span
                     className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0"
-                    style={{ background: p.badgeBg, color: p.badgeColor, borderColor: p.badgeBorder }}
+                    style={{ background: badge.bg, color: badge.color, borderColor: badge.border }}
                 >
                     {p.bestFor}
                 </span>
@@ -59,7 +60,10 @@ export default function ProviderCard({
                 {p.free}
             </div>
             {p.isStructured && (
-                <div className="text-[9px] font-semibold text-[#92400e] bg-[#fef3c7] border border-[#fcd34d] rounded px-1.5 py-0.5 inline-block mb-1">
+                <div
+                    className="text-[9px] font-semibold rounded px-1.5 py-0.5 inline-block mb-1"
+                    style={{ background: "var(--warning-light)", color: "var(--warning)", border: "1px solid color-mix(in srgb, var(--warning) 40%, transparent)" }}
+                >
                     ✓ Structured data · Not web scraping
                 </div>
             )}

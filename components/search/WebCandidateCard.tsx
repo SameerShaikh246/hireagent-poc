@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { WebCandidate } from "@/lib/webSearchTypes";
 import { SOURCE_LABEL, sourceStyle, scoreColor, recLabel } from "@/lib/searchProviders";
+import ExpandableRow from "../ExpandableRow";
 
 const Linkedin = createLucideIcon('Linkedin', [
     ['path', { d: 'M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z', key: 'linkedin' }]
@@ -69,8 +70,10 @@ export default function WebCandidateCard({
 
     return (
         <div className="fade-in bg-(--surface) border border-(--border) rounded-(--radius-lg) shadow-(--shadow-sm) overflow-hidden">
-            <div
-                onClick={() => setExpandedId(isOpen ? null : c.id)}
+            <ExpandableRow
+                isOpen={isOpen}
+                onToggle={() => setExpandedId(isOpen ? null : c.id)}
+                label={`${isOpen ? "Collapse" : "Expand"} details for ${c.name}`}
                 className="flex items-center gap-[14px] px-[18px] py-[14px] cursor-pointer select-none"
             >
                 <RankBadge rank={rank} />
@@ -135,14 +138,15 @@ export default function WebCandidateCard({
                 <ChevronDown
                     size={14}
                     strokeWidth={2.25}
+                    aria-hidden="true"
                     className="text-(--text-muted) shrink-0 transition-transform duration-200"
                     style={{ transform: isOpen ? "rotate(180deg)" : "none" }}
                 />
-            </div>
+            </ExpandableRow>
 
             {isOpen && (
                 <div className="border-t border-(--border) p-[18px] bg-(--bg)">
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <div className="text-[12px] font-semibold text-(--text-secondary) mb-3 uppercase tracking-[0.05em]">
                                 Skill Match
@@ -161,7 +165,11 @@ export default function WebCandidateCard({
                                     </div>
                                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
                                         <div
-                                            style={{ width: `${(bar.value / bar.max) * 100}%`, background: bar.color, transition: "width 0.6s ease" }}
+                                            style={{
+                                                width: `${bar.max > 0 ? (bar.value / bar.max) * 100 : 0}%`,
+                                                background: bar.color,
+                                                transition: "width 0.6s ease",
+                                            }}
                                             className="h-full rounded-full"
                                         />
                                     </div>

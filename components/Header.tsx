@@ -60,11 +60,12 @@ export default function Header({
             <div className="flex items-center gap-3">
                 <Link href="/convert-cv">
                     <button
-                        className="flex items-center gap-1.5 text-[13px] font-medium rounded-(--radius) px-[14px] py-[7px] border-none cursor-pointer transition-opacity hover:opacity-90"
+                        aria-label="Convert CV"
+                        className="flex items-center gap-1.5 text-[13px] font-medium rounded-(--radius) px-[10px] sm:px-[14px] py-[7px] border-none cursor-pointer transition-opacity hover:opacity-90"
                         style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
                     >
                         <Wand2 size={14} strokeWidth={2.25} />
-                        Convert CV
+                        <span className="hidden sm:inline">Convert CV</span>
                     </button>
                 </Link>
 

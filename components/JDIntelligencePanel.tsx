@@ -29,7 +29,7 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)] overflow-hidden shadow-[var(--shadow-sm)]">
       {/* Header */}
-      <div className="flex items-center gap-3 px-5 py-4" style={{ background: "var(--accent-light)" }}>
+      <div className="flex items-center gap-3 px-5 py-4 flex-wrap" style={{ background: "var(--accent-light)" }}>
         <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: "var(--surface)" }}>
           <BrainCircuit size={16} strokeWidth={2} color="var(--accent)" />
         </div>
@@ -63,7 +63,7 @@ export default function JDIntelligencePanel({ result, defaultOpen = false }: Pro
       </div>
 
       {/* Skills comparison */}
-      <div className="px-5 py-4 border-t border-[var(--border)] grid grid-cols-2 gap-4">
+      <div className="px-5 py-4 border-t border-[var(--border)] grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">
             Original must-have

@@ -29,7 +29,7 @@ export interface CandidateSearchResponse {
   creditsUsed?: number;
   warning?: string;
 
-  extractedJD?: {
+  extractedJD: {
     jobTitle: string;
     mandatorySkills: string[];
     mustHaveSkills: string[];
@@ -108,11 +108,6 @@ function matchSkillsInText(text: string, skills: string[]): string[] {
 }
 
 // ─── Hard allow-list sanitizer ─────────────────────────────────────────────────
-// CRITICAL: this is the single source of truth that prevents any skill outside
-// the JD's actual skill list from ever appearing in matchedSkills, regardless
-// of what an LLM (Groq) or any heuristic returns. Every code path that sets
-// matchedSkills — GitHub matching, web-search matching, Groq enrichment — must
-// run its output through this before it's used or merged.
 function sanitizeToAllowedSkills(skills: string[], allSkills: string[]): string[] {
   const allowedCanonical = new Set(allSkills.map(canonicalSkill));
   return [...new Set(
@@ -136,12 +131,6 @@ function scoreWebResult(
 }
 
 // ─── Free-text JD extraction (Groq) ───────────────────────────────────────
-// When jdMode === "freetext" the client only has raw JD text — no title / skill
-// tiers. We ask Groq to derive them so the rest of the pipeline (PDL query
-// builder, web search query builder, GitHub query planner, skill matching,
-// scoring) can run exactly as it already does for structured JDs, completely
-// unchanged.
-
 interface ExtractedJDFields {
   jobTitle: string;
   mandatorySkills: string[];
@@ -242,21 +231,11 @@ interface EnrichedCandidate {
   experienceYears?: number;
   matchedSkills: string[];
   confidence: number;
-  // Candidate quality gate
   isValidCandidate: boolean;
   nameConfidence: number;
   rejectionReason?: string;
 }
 
-// Search results scraped from LinkedIn/profile pages come bundled with a lot
-// of noise that has nothing to do with the candidate themselves: activity-feed
-// posts ("Liked by X — View Post"), "People Also Viewed" lists full of OTHER
-// people's names, hiring-post reposts, etc. Feeding that straight to Groq is
-// what produces junk like "Exploring life and learning new technologies" as a
-// summary, or the model getting confused about whose name is whose. Here we
-// isolate just the person's own "About" section (their real bio) when present,
-// and fall back to a trimmed raw snippet only if there's no About section to
-// extract from.
 function extractProfileSource(candidate: WebCandidate): string {
   const raw = candidate.rawSnippet || candidate.snippet || "";
 
@@ -270,8 +249,6 @@ function extractProfileSource(candidate: WebCandidate): string {
     return `${headerLines}\n${about}`.trim().slice(0, 600);
   }
 
-  // No usable About section — strip the noisiest sections (Activity, People
-  // Also Viewed) out of the raw text rather than sending them wholesale.
   const stripped = raw
     .split(/##\s*(Activity|People Also Viewed|Publications|Honors & Awards|Certifications|Volunteering|Languages|Organizations)/i)[0]
     .trim();
@@ -291,9 +268,6 @@ async function enrichWebCandidatesWithGroq(
   const input = candidates.map((candidate, index) => ({
     index,
     nameFromSearch: candidate.name,
-    // Use the ORIGINAL, unmodified search-result title — not the naive
-    // string-split guess used for display — so Groq isn't reasoning from an
-    // already-corrupted value (e.g. a company name that got misparsed as a title).
     titleFromSearch: candidate.rawTitle || candidate.title,
     companyFromSearch: candidate.company,
     locationFromSearch: candidate.location,
@@ -422,8 +396,6 @@ ${JSON.stringify(input, null, 2)}
             ? item.name.trim()
             : "Unknown Candidate",
 
-        // Guard against the model (or any future prompt drift) emitting a
-        // literal placeholder instead of a real title.
         title:
           /cleaned title not available/i.test(rawTitle) || !rawTitle.trim()
             ? "Professional"
@@ -450,10 +422,6 @@ ${JSON.stringify(input, null, 2)}
             ? Math.round(item.experienceYears)
             : candidates[item.index].experienceYears,
 
-        // HARD SANITIZATION: whatever Groq returns for matchedSkills is
-        // filtered against the JD's actual allSkills list right here, before
-        // it ever gets stored or merged. This is what prevents unrelated
-        // skills (e.g. "react" on a Digital Marketing search) from leaking in.
         matchedSkills: sanitizeToAllowedSkills(
           Array.isArray(item.matchedSkills) ? item.matchedSkills.map(String) : [],
           allSkills,
@@ -467,7 +435,7 @@ ${JSON.stringify(input, null, 2)}
         isValidCandidate:
           typeof item.isValidCandidate === "boolean"
             ? item.isValidCandidate
-            : true, // default to keeping the candidate if the model omitted the field
+            : true,
 
         nameConfidence:
           typeof item.nameConfidence === "number"
@@ -489,19 +457,10 @@ ${JSON.stringify(input, null, 2)}
           return candidate;
         }
 
-        // Drop results Groq identified as not being real candidate profiles
-        // (job listings, hiring posts, company pages, etc.)
         if (!enriched.isValidCandidate) {
           return null;
         }
 
-        // Both sides of this merge are already sanitized to allSkills — the
-        // original candidate.matchedSkills came from GitHub/web-search
-        // matching which is itself constrained (see searchGitHubAPI /
-        // webResultToCandidate), and enriched.matchedSkills was sanitized
-        // just above. Re-sanitizing here is a final guarantee, not redundant
-        // defense — it protects against any future code path that sets
-        // candidate.matchedSkills without going through sanitization.
         const matchedSkills = sanitizeToAllowedSkills(
           [...candidate.matchedSkills, ...enriched.matchedSkills],
           allSkills,
@@ -542,16 +501,12 @@ ${JSON.stringify(input, null, 2)}
       error instanceof Error ? error.message : error,
     );
 
-    // Important: search should still work even if Groq enrichment fails.
     return candidates;
   }
 }
 
 
 // ─── PDL: People Data Labs ─────────────────────────────────────────────────────
-// Uses the Person Search API with SQL queries — real structured data, not web scraping.
-// Free tier: 100 records/month. Signup: peopledatalabs.com
-
 interface PDLPersonRecord {
   id?: string;
   full_name?: string;
@@ -587,9 +542,7 @@ function buildPDLQuery(
 ): string {
   const conditions: string[] = [];
   conditions.push(`location_country = 'india'`);
-  // Job title — try broad match
   if (jobTitle.trim()) {
-    // strip seniority words for broader match
     const cleanTitle = jobTitle.toLowerCase()
       .replace(/\b(senior|sr|junior|jr|lead|staff|principal|associate|mid|entry)\b/g, "")
       .trim();
@@ -598,12 +551,10 @@ function buildPDLQuery(
     }
   }
 
-  // Mandatory skills — must have ALL of them (AND)
   for (const skill of mandatorySkills.slice(0, 3)) {
     conditions.push(`skills IN ('${skill.toLowerCase().replace(/'/g, "''")}')`);
   }
 
-  // Must-have skills — at least 1 (OR group), capped so query stays selective
   if (mustHaveSkills.length > 0) {
     const mustStr = mustHaveSkills
       .slice(0, 5)
@@ -670,7 +621,6 @@ function scorePDLCandidate(
   const skills = (record.skills ?? []).map((s) => s.toLowerCase());
   const allText = `${record.job_title ?? ""} ${record.summary ?? ""} ${record.headline ?? ""} ${skills.join(" ")}`;
 
-  // Skill match scoring (weighted per tier)
   const matchMandatory = mandatorySkills.filter((s) =>
     skills.includes(s.toLowerCase()) || matchSkillsInText(allText, [s]).length > 0
   );
@@ -685,7 +635,6 @@ function scorePDLCandidate(
   const mustRatio = mustHaveSkills.length > 0 ? matchMust.length / mustHaveSkills.length : 0.5;
   const niceRatio = niceToHaveSkills.length > 0 ? matchNice.length / niceToHaveSkills.length : 1;
 
-  // Title similarity bonus
   const reqTitle = normalize(jobTitle);
   const candTitle = normalize(record.job_title ?? "");
   const titleWords = reqTitle.split(" ").filter((w) => w.length > 2);
@@ -793,12 +742,6 @@ async function searchPDL(
 }
 
 // ─── Web search providers (Tavily / Exa / Serper) ─────────────────────────────
-// function detectSource(url: string): WebCandidate["source"] {
-//   if (url.includes("linkedin.com/in/")) return "linkedin";
-//   if (url.includes("github.com/") && url.split("/").filter(Boolean).length <= 4) return "github";
-//   if (url.includes("behance") || url.includes("dribbble") || url.includes("portfolio") || url.includes("about.me")) return "portfolio";
-//   return "other";
-// }
 function detectSource(url: string): WebCandidate["source"] {
   const normalizedUrl = url.toLowerCase();
 
@@ -829,8 +772,6 @@ const JOB_SIGNALS = [
   "we are hiring", "greenhouse.io", "myworkdayjobs", "breezy.hr", "jobs.lever.co",
   "linkedin.com/company/", "linkedin.com/posts/", "linkedin.com/pulse/",
   "github.com/topics/", "github.com/trending", "stackoverflow.com",
-  // Job-board / aggregator domains and phrasing (these slip through as fake
-  // "candidates" if not explicitly caught — they're listing pages, not people)
   "shine.com", "timesjobs.com", "freshersworld.com", "instahyre.com",
   "foundit.in", "iimjobs.com", "cutshort.io", "hirist.com",
   "jobs openings", "active jobs", "job openings", "job search",
@@ -869,9 +810,9 @@ function webResultToCandidate(
     company: "",
     url: r.url,
     source,
-    snippet: r.snippet.slice(0, 380),  // Initial fallback description — replaced by Groq enrichment when available
-    rawSnippet: r.snippet.slice(0, 1000),  // Preserve original source
-    rawTitle: r.title,  // Unmodified — used by Groq enrichment instead of the naive split above
+    snippet: r.snippet.slice(0, 380),
+    rawSnippet: r.snippet.slice(0, 1000),
+    rawTitle: r.title,
     matchedSkills,
     missingSkills,
     relevanceScore: scoreWebResult(matchedSkills, allSkills, source, r.snippet.length),
@@ -913,8 +854,8 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
     body: JSON.stringify({
       q: query,
       num: 10,
-      gl: "in",      // Google India
-      hl: "en",      // English
+      gl: "in",
+      hl: "en",
       location: "India"
     }),
   });
@@ -976,8 +917,6 @@ async function runWebSearch(
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
     .slice(0, 10);
 
-  // Enhance names, titles, companies and summaries with Groq, and drop any
-  // results that turn out not to be real individual candidates.
   if (groqApiKey?.trim()) {
     candidates = await enrichWebCandidatesWithGroq(
       candidates,
@@ -993,15 +932,6 @@ async function runWebSearch(
 }
 
 // ─── GitHub: dynamic query planning via Groq ───────────────────────────────
-// GitHub user-search only supports two useful signals: `language:X` (a FIXED
-// vocabulary of real repo languages) and free-text keyword matching against
-// bio/name/company. Skills like "React", "SEO", "AWS" aren't languages, so a
-// static skill->language table can never cover the full JD space, and would
-// also incorrectly try to map non-technical skills onto languages. Instead we
-// ask Groq to translate the JD into the best available GitHub query terms,
-// and clamp its language picks against a fixed valid-language set so it can't
-// suggest something GitHub search won't understand.
-
 const GITHUB_VALID_LANGUAGES = new Set([
   "javascript", "typescript", "python", "java", "c", "c++", "c#", "go", "rust",
   "ruby", "php", "swift", "kotlin", "dart", "scala", "r", "matlab", "perl",
@@ -1010,13 +940,13 @@ const GITHUB_VALID_LANGUAGES = new Set([
 ]);
 
 interface GitHubLanguagePlan {
-  language: string;   // real GitHub language, clamped to GITHUB_VALID_LANGUAGES
-  skills: string[];   // original skill strings this language is meant to represent
+  language: string;
+  skills: string[];
 }
 
 interface GitHubQueryPlan {
   languages: GitHubLanguagePlan[];
-  keywords: string[]; // standalone bio/profile search terms — searched ONE AT A TIME, never AND'd
+  keywords: string[];
 }
 
 async function planGitHubQuery(
@@ -1076,8 +1006,6 @@ Return ONLY valid JSON, nothing else:
             const e = entry as { language?: unknown; skills?: unknown };
             return {
               language: String(e?.language ?? "").toLowerCase().trim(),
-              // Only keep skills that are actually in the JD's own skill list —
-              // Groq shouldn't be inventing skill names here either.
               skills: Array.isArray(e?.skills)
                 ? sanitizeToAllowedSkills(e.skills.map(String), allSkills)
                 : [],
@@ -1097,8 +1025,6 @@ Return ONLY valid JSON, nothing else:
     return { languages, keywords };
   } catch (error) {
     console.error("GitHub query planning failed, using fallback:", error instanceof Error ? error.message : error);
-    // Last-resort fallback: only ever use the JD's own skills/title as keywords —
-    // never invent or default to an unrelated skill set.
     const naiveLangMap: Record<string, string> = {
       javascript: "javascript", typescript: "typescript", react: "javascript",
       nextjs: "typescript", nodejs: "javascript", angular: "typescript", vue: "javascript",
@@ -1149,7 +1075,6 @@ async function fetchGitHubJSON(
       );
     }
 
-    // GitHub uses 403 for the primary API rate limit.
     if (res.status === 403 && remaining === "0") {
       const resetAt = reset
         ? new Date(Number(reset) * 1000)
@@ -1170,7 +1095,6 @@ async function fetchGitHubJSON(
       );
     }
 
-    // Some GitHub/API infrastructure can return 429.
     if (res.status === 429) {
       throw new Error(
         "GitHub API rate limit exceeded. Add a GitHub Personal Access Token or try again later.",
@@ -1234,9 +1158,6 @@ async function searchGitHubAPI(
   };
   if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
 
-  // Each variant asserts exactly ONE signal — never AND multiple keywords
-  // together, since GitHub's q= parameter requires every bare word to
-  // literally co-occur, which almost never happens across several skills.
   type QueryVariant = { q: string; confirmedSkills: string[] };
   const variants: QueryVariant[] = [];
 
@@ -1276,8 +1197,6 @@ async function searchGitHubAPI(
     (r) => r.status === "fulfilled" && (r.value.data.items?.length ?? 0) > 0,
   );
 
-  // Fallback: if every variant came back empty (over-narrow query), retry with
-  // just the strongest single language (or job title) and no other constraints.
   let fallbackSettled: typeof settled = [];
   if (!anySuccessWithItems) {
     const primary = plan.languages[0];
@@ -1302,10 +1221,6 @@ async function searchGitHubAPI(
   }
 const allSettled = [...settled, ...fallbackSettled];
 
-// At this point at least one request succeeded.
-
-// ─── GitHub rate-limit warning ────────────────────────────────────────────────
-// ─── GitHub rate-limit warning ────────────────────────────────────────────────
 let githubWarning: string | undefined;
 
 const rateLimitInfo = allSettled
@@ -1361,22 +1276,15 @@ let candidates: WebCandidate[] = profileSettled
   .map((p) => p.value.data)
   .map((p) => {
 
-      // confirmed skills come from which query variant(s) actually returned
-      // this user (e.g. language:javascript => react/javascript confirmed).
       const confirmed = [...(loginToConfirmedSkills.get(p.login) ?? [])];
       const combined = `${p.bio ?? ""} ${p.company ?? ""}`;
       const bioMatched = matchSkillsInText(combined, allSkills);
 
-      // Hard sanitization: even though confirmed/bioMatched are already
-      // derived from allSkills, run the union through the allow-list filter
-      // as a guaranteed final gate before it's ever stored.
       const matchedSkills = sanitizeToAllowedSkills([...bioMatched, ...confirmed], allSkills);
       const missingSkills = allSkills.filter((s) => !matchedSkills.includes(canonicalSkill(s)));
 
       const snippet = p.bio || [p.company, p.location, `${p.public_repos} public repos`].filter(Boolean).join(" · ");
 
-      // Scoring: confirmed signals (from the query itself) count far more
-      // than bio-text guesses. Followers act as a small tiebreaker only.
       const skillRatio = allSkills.length > 0 ? matchedSkills.length / allSkills.length : 0;
       const confirmedBonus = confirmed.length * 12;
       const repoActivityBonus = Math.min(8, Math.round(p.public_repos / 30));
@@ -1386,7 +1294,7 @@ let candidates: WebCandidate[] = profileSettled
       return {
         id: `github-${p.login}`,
         name: p.name?.trim() || p.login,
-        title: "Professional", // refined by Groq enrichment below from bio, when available
+        title: "Professional",
         company: p.company?.replace(/^@/, "").trim() ?? "",
         url: p.html_url,
         source: "github" as const,
@@ -1405,9 +1313,6 @@ let candidates: WebCandidate[] = profileSettled
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
     .slice(0, 10);
 
-  // GitHub bios are free text — Groq derives a clean title/summary from them,
-  // the same way it does for the scraped web-search providers. Its output is
-  // sanitized to allSkills inside enrichWebCandidatesWithGroq itself.
   if (groqApiKey?.trim()) {
     candidates = await enrichWebCandidatesWithGroq(candidates, allSkills, groqApiKey.trim());
   }
@@ -1449,15 +1354,9 @@ export async function POST(req: NextRequest) {
     if (!["pdl", "tavily", "exa", "serper", "github"].includes(provider))
       return NextResponse.json({ error: "Invalid provider." }, { status: 400 });
 
-    // GitHub works unauthenticated (60 req/hr); only require an API key for
-    // the other web-search providers and PDL.
     if (provider !== "github" && (!apiKey || apiKey.trim().length < 5))
       return NextResponse.json({ error: "API key is required." }, { status: 400 });
 
-    // Web-search providers (and GitHub) scrape/derive from raw profile data,
-    // not structured records — without Groq to build the query (GitHub) and
-    // clean names/titles/summaries and filter out non-candidate pages, results
-    // will contain garbled names, unrelated skills, and unprofessional text.
     if (provider !== "pdl" && (!groqApiKey || groqApiKey.trim().length < 10)) {
       return NextResponse.json(
         { error: "A Groq API key is required for tavily/exa/serper/github so a good search query can be built and results can be cleaned up and validated. PDL doesn't need it since it returns structured data directly." },
@@ -1471,7 +1370,6 @@ export async function POST(req: NextRequest) {
     let finalMandatorySkills = mandatorySkills;
     let finalMustHaveSkills = mustHaveSkills;
     let finalNiceToHaveSkills = niceToHaveSkills;
-    let extractedJD: CandidateSearchResponse["extractedJD"];
 
     if (jdMode === "freetext") {
       if (!jdText || jdText.trim().length < 20)
@@ -1490,14 +1388,7 @@ export async function POST(req: NextRequest) {
       finalJobTitle = extracted.jobTitle || finalJobTitle;
       finalMandatorySkills = extracted.mandatorySkills.length > 0 ? extracted.mandatorySkills : finalMandatorySkills;
       finalMustHaveSkills = extracted.mustHaveSkills.length > 0 ? extracted.mustHaveSkills : finalMustHaveSkills;
-      finalNiceToHaveSkills = extracted.niceToHaveSkills.length > 0 ? extracted.niceToHaveSkills : finalNiceToHaveSkills; 
-
-      extractedJD = {
-        jobTitle: finalJobTitle,
-        mandatorySkills: finalMandatorySkills,
-        mustHaveSkills: finalMustHaveSkills,
-        niceToHaveSkills: finalNiceToHaveSkills,
-      };
+      finalNiceToHaveSkills = extracted.niceToHaveSkills.length > 0 ? extracted.niceToHaveSkills : finalNiceToHaveSkills;
     }
 
     if (!finalJobTitle.trim() && finalMustHaveSkills.length === 0 && finalMandatorySkills.length === 0)
@@ -1507,6 +1398,17 @@ export async function POST(req: NextRequest) {
           : "Add a job title or skills to the JD first." },
         { status: 400 },
       );
+
+    // Always populated — for BOTH structured and freetext modes — since this
+    // is the exact skill set every provider searched with. The frontend reads
+    // effectiveSkills from this field instead of recomputing it from JDContext,
+    // so structured and freetext results render identically correctly.
+    const extractedJD: CandidateSearchResponse["extractedJD"] = {
+      jobTitle: finalJobTitle,
+      mandatorySkills: finalMandatorySkills,
+      mustHaveSkills: finalMustHaveSkills,
+      niceToHaveSkills: finalNiceToHaveSkills,
+    };
 
 let result: {
   candidates: WebCandidate[];

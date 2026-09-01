@@ -65,10 +65,24 @@ Rules:
       }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errorText = await res.text();
+
+      console.error("[Groq] API ERROR:", {
+        status: res.status,
+        statusText: res.statusText,
+        body: errorText,
+      });
+
+      return null;
+    }
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content ?? "";
-    const match = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim().match(/\{[\s\S]*\}/);
+    const match = raw
+      .replace(/```(?:json)?\s*/gi, "")
+      .replace(/```/g, "")
+      .trim()
+      .match(/\{[\s\S]*\}/);
     if (!match) return null;
 
     const parsed = JSON.parse(match[0]);
@@ -76,10 +90,16 @@ Rules:
     const norm = (arr: unknown[]): SkillSuggestion[] =>
       Array.isArray(arr)
         ? arr
-            .filter((s): s is Record<string, string> => !!s && typeof s === "object")
+            .filter(
+              (s): s is Record<string, string> => !!s && typeof s === "object",
+            )
             .map((s) => ({
-              skill: String(s.skill ?? "").toLowerCase().trim(),
-              confidence: (["high", "medium"].includes(s.confidence) ? s.confidence : "medium") as "high" | "medium",
+              skill: String(s.skill ?? "")
+                .toLowerCase()
+                .trim(),
+              confidence: (["high", "medium"].includes(s.confidence)
+                ? s.confidence
+                : "medium") as "high" | "medium",
               reason: String(s.reason ?? ""),
             }))
             .filter((s) => s.skill.length > 0)
@@ -92,13 +112,16 @@ Rules:
       source: "groq",
       occupation: String(parsed.occupation ?? title),
     };
-  } catch {
+  } catch (error) {
+    console.error("[Groq] FETCH ERROR:", error);
     return null;
   }
 }
 
 // ESCO fallback
-async function fetchFromEsco(title: string): Promise<SuggestSkillsResponse | null> {
+async function fetchFromEsco(
+  title: string,
+): Promise<SuggestSkillsResponse | null> {
   try {
     const searchRes = await fetch(
       `https://ec.europa.eu/esco/api/resource/occupation?language=en&text=${encodeURIComponent(title)}&limit=3`,
@@ -110,7 +133,7 @@ async function fetchFromEsco(title: string): Promise<SuggestSkillsResponse | nul
     const occupations = searchData?._embedded?.results ?? [];
     if (!occupations.length) return null;
 
-    const occ = occupations[0]; 
+    const occ = occupations[0];
     const skillsRes = await fetch(
       `https://ec.europa.eu/esco/api/resource/occupation?uri=${encodeURIComponent(occ.uri)}&language=en`,
       { headers: { Accept: "application/json" } },
@@ -118,19 +141,31 @@ async function fetchFromEsco(title: string): Promise<SuggestSkillsResponse | nul
     if (!skillsRes.ok) return null;
 
     const skillsData = await skillsRes.json();
-    const essential: { title: string }[] = skillsData?._links?.hasEssentialSkill ?? [];
-    const optional: { title: string }[] = skillsData?._links?.hasOptionalSkill ?? [];
+    const essential: { title: string }[] =
+      skillsData?._links?.hasEssentialSkill ?? [];
+    const optional: { title: string }[] =
+      skillsData?._links?.hasOptionalSkill ?? [];
 
-    const toSug = (s: { title: string }, conf: "high" | "medium", reason: string): SkillSuggestion => ({
+    const toSug = (
+      s: { title: string },
+      conf: "high" | "medium",
+      reason: string,
+    ): SkillSuggestion => ({
       skill: s.title.toLowerCase().trim(),
       confidence: conf,
       reason,
     });
 
     return {
-      mandatory: essential.slice(0, 3).map((s) => toSug(s, "high", `Essential for ${occ.title}`)),
-      mustHave: essential.slice(3, 10).map((s) => toSug(s, "high", `Required for ${occ.title}`)),
-      niceToHave: optional.slice(0, 5).map((s) => toSug(s, "medium", `Beneficial for ${occ.title}`)),
+      mandatory: essential
+        .slice(0, 3)
+        .map((s) => toSug(s, "high", `Essential for ${occ.title}`)),
+      mustHave: essential
+        .slice(3, 10)
+        .map((s) => toSug(s, "high", `Required for ${occ.title}`)),
+      niceToHave: optional
+        .slice(0, 5)
+        .map((s) => toSug(s, "medium", `Beneficial for ${occ.title}`)),
       source: "esco",
       occupation: occ.title ?? title,
     };
@@ -145,24 +180,50 @@ function localFallback(title: string): SuggestSkillsResponse {
   if (t.includes("qa") || t.includes("quality") || t.includes("test")) {
     return {
       mandatory: [
-        { skill: "manual testing", confidence: "high", reason: "Core QA function" },
-        { skill: "test case design", confidence: "high", reason: "Fundamental QA skill" },
+        {
+          skill: "manual testing",
+          confidence: "high",
+          reason: "Core QA function",
+        },
+        {
+          skill: "test case design",
+          confidence: "high",
+          reason: "Fundamental QA skill",
+        },
       ],
       mustHave: [
         { skill: "selenium", confidence: "high", reason: "Test automation" },
         { skill: "jira", confidence: "high", reason: "Bug tracking" },
-        { skill: "api testing", confidence: "high", reason: "Backend validation" },
+        {
+          skill: "api testing",
+          confidence: "high",
+          reason: "Backend validation",
+        },
       ],
       niceToHave: [
-        { skill: "cypress", confidence: "medium", reason: "Modern E2E testing" },
+        {
+          skill: "cypress",
+          confidence: "medium",
+          reason: "Modern E2E testing",
+        },
         { skill: "postman", confidence: "medium", reason: "API tool" },
-        { skill: "ci/cd", confidence: "medium", reason: "Pipeline integration" },
+        {
+          skill: "ci/cd",
+          confidence: "medium",
+          reason: "Pipeline integration",
+        },
       ],
       source: "fallback",
       occupation: "QA Engineer",
     };
   }
-  return { mandatory: [], mustHave: [], niceToHave: [], source: "fallback", occupation: title };
+  return {
+    mandatory: [],
+    mustHave: [],
+    niceToHave: [],
+    source: "fallback",
+    occupation: title,
+  };
 }
 
 // Handler
@@ -171,10 +232,18 @@ export async function POST(req: NextRequest) {
     const { title, department, roleType, apiKey } = await req.json();
 
     if (!title || title.trim().length < 2)
-      return NextResponse.json({ error: "Job title required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Job title required" },
+        { status: 400 },
+      );
 
     if (apiKey) {
-      const groq = await fetchFromGroq(title.trim(), department ?? "", roleType ?? "technical", apiKey);
+      const groq = await fetchFromGroq(
+        title.trim(),
+        department ?? "",
+        roleType ?? "technical",
+        apiKey,
+      );
       if (groq) return NextResponse.json(groq);
     }
 
@@ -185,6 +254,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(localFallback(title.trim()));
   } catch (err) {
     console.error("suggest-skills error:", err);
-    return NextResponse.json({ error: "Failed to fetch suggestions" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to fetch suggestions" },
+      { status: 500 },
+    );
   }
 }

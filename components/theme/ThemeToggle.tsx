@@ -1,4 +1,5 @@
 "use client";
+
 import { Sun, Moon } from "lucide-react";
 import { useTheme } from "./ThemeProvider";
 
@@ -10,11 +11,17 @@ export default function ThemeToggle() {
         <button
             type="button"
             onClick={toggleTheme}
-            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label={
+                isDark
+                    ? "Switch to light mode"
+                    : "Switch to dark mode"
+            }
             aria-pressed={isDark}
             className="relative w-[52px] h-[28px] rounded-full border transition-colors cursor-pointer shrink-0"
             style={{
-                background: isDark ? "var(--accent-light)" : "var(--surface-hover)",
+                background: isDark
+                    ? "var(--accent-light)"
+                    : "var(--surface-hover)",
                 borderColor: "var(--border)",
             }}
         >
@@ -23,13 +30,23 @@ export default function ThemeToggle() {
                 style={{
                     background: "var(--surface)",
                     boxShadow: "var(--shadow-sm)",
-                    transform: isDark ? "translateX(26px)" : "translateX(2px)",
+                    transform: isDark
+                        ? "translateX(26px)"
+                        : "translateX(2px)",
                 }}
             >
                 {isDark ? (
-                    <Moon size={12} strokeWidth={2.25} color="var(--accent)" />
+                    <Moon
+                        size={12}
+                        strokeWidth={2.25}
+                        color="var(--accent)"
+                    />
                 ) : (
-                    <Sun size={12} strokeWidth={2.25} color="var(--warning)" />
+                    <Sun
+                        size={12}
+                        strokeWidth={2.25}
+                        color="var(--warning)"
+                    />
                 )}
             </span>
         </button>

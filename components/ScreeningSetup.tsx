@@ -118,38 +118,40 @@ export default function ScreeningSetup() {
 
             <div className="flex flex-col gap-6">
                 {/* Step 1 — API key */}
-                <div
-                    className="rounded-(--radius-lg) p-5 shadow-(--shadow-sm) border"
-                    style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-                >
+                <div>
                     <StepLabel n={1}>Groq API key</StepLabel>
-                    <div className="flex items-center gap-3 mb-3">
-                        <div
-                            className="w-9 h-9 rounded-(--radius) flex items-center justify-center shrink-0"
-                            style={{ background: "var(--accent-light)" }}
-                        >
-                            <KeyRound size={16} strokeWidth={2} color="var(--accent)" />
-                        </div>
-                        <p className="text-[12px] text-(--text-muted)">
-                            Get a free key at{" "}
-                            <a
-                                href="https://console.groq.com/keys"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-(--accent) inline-flex items-center gap-0.5"
+                    <div
+                        className="rounded-(--radius-lg) p-5 shadow-(--shadow-sm) border"
+                        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+                    >
+                        <div className="flex items-center gap-3 mb-3">
+                            <div
+                                className="w-9 h-9 rounded-(--radius) flex items-center justify-center shrink-0"
+                                style={{ background: "var(--accent-light)" }}
                             >
-                                console.groq.com <ExternalLink size={10} />
-                            </a>
-                        </p>
+                                <KeyRound size={16} strokeWidth={2} color="var(--accent)" />
+                            </div>
+                            <p className="text-[12px] text-(--text-muted)">
+                                Get a free key at{" "}
+                                <a
+                                    href="https://console.groq.com/keys"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-(--accent) inline-flex items-center gap-0.5"
+                                >
+                                    console.groq.com <ExternalLink size={10} />
+                                </a>
+                            </p>
+                        </div>
+                        <input
+                            type="password"
+                            value={groqApiKey}
+                            onChange={(e) => setGroqApiKey(e.target.value)}
+                            placeholder="gsk_..."
+                            className="w-full border rounded-(--radius) px-3 py-2.5 text-[13px] font-data text-(--text-primary) outline-none transition-colors"
+                            style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+                        />
                     </div>
-                    <input
-                        type="password"
-                        value={groqApiKey}
-                        onChange={(e) => setGroqApiKey(e.target.value)}
-                        placeholder="gsk_..."
-                        className="w-full border rounded-(--radius) px-3 py-2.5 text-[13px] font-data text-(--text-primary) outline-none transition-colors"
-                        style={{ background: "var(--bg)", borderColor: "var(--border)" }}
-                    />
                 </div>
 
                 {/* Step 2 — Job description */}

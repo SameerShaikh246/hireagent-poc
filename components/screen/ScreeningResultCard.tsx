@@ -2,6 +2,7 @@
 import { Trophy, Medal, XCircle, Ban, ThumbsUp, ThumbsDown, ChevronDown } from "lucide-react";
 import type { CandidateResult, ScreeningResponse } from "@/types";
 import { toneStyle, recommendationTone } from "@/lib/badgeTones";
+import ExpandableRow from "@/components/ExpandableRow";
 
 const ScoreBar = ({ value, max, color }: { value: number; max: number; color: string }) => (
     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
@@ -59,8 +60,10 @@ export default function ScreeningResultCard({
             className={`fade-in bg-(--surface) border rounded-(--radius-lg) shadow-(--shadow-sm) overflow-hidden ${isDisqualified ? "opacity-80" : "border-(--border)"}`}
             style={isDisqualified ? { borderColor: "color-mix(in srgb, var(--danger) 40%, transparent)" } : undefined}
         >
-            <div
-                onClick={() => setExpandedId(isOpen ? null : c.id)}
+            <ExpandableRow
+                isOpen={isOpen}
+                onToggle={() => setExpandedId(isOpen ? null : c.id)}
+                label={`${isOpen ? "Collapse" : "Expand"} details for ${c.fileName.replace(/\.[^.]+$/, "")}`}
                 className="flex items-center gap-[14px] px-[18px] py-[14px] cursor-pointer select-none"
             >
                 <RankBadge rank={c.rank} disqualified={isDisqualified} />
@@ -109,10 +112,11 @@ export default function ScreeningResultCard({
                 <ChevronDown
                     size={14}
                     strokeWidth={2.25}
+                    aria-hidden="true"
                     className="text-(--text-muted) shrink-0 transition-transform duration-200"
                     style={{ transform: isOpen ? "rotate(180deg)" : "none" }}
                 />
-            </div>
+            </ExpandableRow>
 
             {isOpen && (
                 <div className="border-t border-(--border) p-[18px] bg-(--bg)">
@@ -153,15 +157,15 @@ export default function ScreeningResultCard({
                             )}
                         </div>
                     ) : (
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <div className="text-[12px] font-semibold text-(--text-secondary) mb-3 uppercase tracking-[0.05em]">
                                     Score Breakdown
                                 </div>
                                 {[
-                                    { label: "Skill Match", value: c.ruleScore.skillScore, max: results.customWeights?.skills ?? 30, color: "var(--accent)" },
-                                    { label: "Experience", value: c.ruleScore.experienceScore, max: results.customWeights?.experience ?? 25, color: "var(--info)" },
-                                    { label: "Education", value: c.ruleScore.educationScore, max: results.customWeights?.education ?? 10, color: "var(--warning)" },
+                                    { label: "Skill Match", value: c.ruleScore.skillScore, max: results.customWeights?.skills ?? 40, color: "var(--accent)" },
+                                    { label: "Experience", value: c.ruleScore.experienceScore, max: results.customWeights?.experience ?? 35, color: "var(--info)" },
+                                    { label: "Education", value: c.ruleScore.educationScore, max: results.customWeights?.education ?? 25, color: "var(--warning)" },
                                     { label: "Role Fit (AI)", value: c.aiAssessment.roleFitScore, max: 100, color: "var(--success)" },
                                 ].map((s) => (
                                     <div key={s.label} className="mb-[10px]">
@@ -242,7 +246,7 @@ export default function ScreeningResultCard({
                                     </div>
                                 </div>
                                 {(c.aiAssessment.whySelect || c.aiAssessment.whyNotSelect) && (
-                                    <div className="grid grid-cols-2 gap-[10px]">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-[10px]">
                                         {c.aiAssessment.whySelect && (
                                             <div className="rounded-[6px] p-[10px_12px]" style={{ background: "var(--success-light)" }}>
                                                 <div className="flex items-center gap-1.5 text-[11px] font-bold mb-[5px]" style={{ color: "var(--success)" }}>

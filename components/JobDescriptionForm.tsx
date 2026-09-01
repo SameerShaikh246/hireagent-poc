@@ -183,7 +183,7 @@ function TagInput({
 // ── Tier block
 function TierBlock({
   tier, label, count, weightLabel, descriptionText,
-  headerStyle, id, tags, onChange, placeholder,
+  badgeClass, id, tags, onChange, placeholder,
   suggestions, loading, disabled,
 }: {
   tier: "mandatory" | "must" | "nice";
@@ -191,7 +191,7 @@ function TierBlock({
   count: number;
   weightLabel: string;
   descriptionText: string;
-  headerStyle: { badge: string; desc: string };
+  badgeClass: string;
   id: string;
   tags: string[];
   onChange: (t: string[]) => void;
@@ -201,25 +201,22 @@ function TierBlock({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5 min-w-0">
       {/* Tier header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${TIER_STYLES[tier].dot}`} />
-          <span className="text-[13px] font-medium text-[var(--text-primary)]">{label}</span>
-        </div>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${TIER_STYLES[tier].dot}`} />
+          <span className="text-[13px] font-medium text-[var(--text-primary)] truncate">{label}</span>
           {count > 0 && (
-            <span className="text-[11px] text-[var(--text-muted)]">{count} added</span>
+            <span className="text-[11px] text-[var(--text-muted)] flex-shrink-0">· {count}</span>
           )}
-          <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${headerStyle.badge}`}>
-            {weightLabel}
-          </span>
         </div>
+        <span className={`text-[10.5px] px-2 py-0.5 rounded-full border font-medium whitespace-nowrap flex-shrink-0 ${badgeClass}`}>
+          {weightLabel}
+        </span>
       </div>
 
-      {/* Description */}
-      <p className={`text-[12px] px-3 py-2 rounded-lg border-l-2 ${headerStyle.desc}`}>
+      <p className="text-[11px] text-[var(--text-muted)] leading-snug truncate" title={descriptionText}>
         {descriptionText}
       </p>
 
@@ -470,57 +467,50 @@ export default function JobDescriptionForm({
             </div>
 
             {/* Section: Skills */}
-            <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-4">
               <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-widest">Skill tiers</div>
 
-              <TierBlock
-                tier="mandatory"
-                label="Mandatory"
-                count={structured.mandatorySkills.length}
-                weightLabel="Auto-disqualify if missing"
-                descriptionText="Candidates missing any of these are removed before scoring. Use sparingly — only truly non-negotiable skills."
-                headerStyle={{
-                  badge: "bg-[#FCEBEB] text-[#7F1D1D] border-[#FCA5A5]",
-                  desc: "border-l-[#EF4444] bg-[#FFF5F5] text-[#7F1D1D]",
-                }}
-                id="mandatory-skills"
-                tags={structured.mandatorySkills}
-                onChange={(t) => set("mandatorySkills", t)}
-                placeholder="Add a non-negotiable skill…"
-                suggestions={getSuggestions("mandatory")}
-                loading={suggestionsLoading}
-                disabled={disabled}
-              />
+              <div className="grid grid-cols-2 gap-4">
+                <TierBlock
+                  tier="mandatory"
+                  label="Mandatory"
+                  count={structured.mandatorySkills.length}
+                  weightLabel="Auto-disqualify"
+                  descriptionText="Missing any of these removes the candidate before scoring."
+                  badgeClass="bg-[#FCEBEB] text-[#7F1D1D] border-[#FCA5A5]"
+                  id="mandatory-skills"
+                  tags={structured.mandatorySkills}
+                  onChange={(t) => set("mandatorySkills", t)}
+                  placeholder="Add a non-negotiable skill…"
+                  suggestions={getSuggestions("mandatory")}
+                  loading={suggestionsLoading}
+                  disabled={disabled}
+                />
 
-              <TierBlock
-                tier="must"
-                label="Must-have"
-                count={structured.mustHaveSkills.length}
-                weightLabel="1.0× weight"
-                descriptionText="Strong preference. Missing these lowers the score but the candidate is still ranked and visible in results."
-                headerStyle={{
-                  badge: "bg-[#ECFDF5] text-[#064E3B] border-[#6EE7B7]",
-                  desc: "border-l-[#10B981] bg-[#F0FDF8] text-[#065F46]",
-                }}
-                id="must-have-skills"
-                tags={structured.mustHaveSkills}
-                onChange={(t) => set("mustHaveSkills", t)}
-                placeholder="Add a required skill…"
-                suggestions={getSuggestions("mustHave")}
-                loading={suggestionsLoading}
-                disabled={disabled}
-              />
+                <TierBlock
+                  tier="must"
+                  label="Must-have"
+                  count={structured.mustHaveSkills.length}
+                  weightLabel="1.0× weight"
+                  descriptionText="Lowers score if missing, candidate still ranked."
+                  badgeClass="bg-[#ECFDF5] text-[#064E3B] border-[#6EE7B7]"
+                  id="must-have-skills"
+                  tags={structured.mustHaveSkills}
+                  onChange={(t) => set("mustHaveSkills", t)}
+                  placeholder="Add a required skill…"
+                  suggestions={getSuggestions("mustHave")}
+                  loading={suggestionsLoading}
+                  disabled={disabled}
+                />
+              </div>
 
               <TierBlock
                 tier="nice"
                 label="Nice-to-have"
                 count={structured.niceToHaveSkills.length}
                 weightLabel="0.6× weight"
-                descriptionText="Bonus if present, no penalty if absent. Good for tools, platforms, or specialisations."
-                headerStyle={{
-                  badge: "bg-[#FFFBEB] text-[#78350F] border-[#FCD34D]",
-                  desc: "border-l-[#F59E0B] bg-[#FFFDF0] text-[#92400E]",
-                }}
+                descriptionText="Bonus if present, no penalty if absent."
+                badgeClass="bg-[#FFFBEB] text-[#78350F] border-[#FCD34D]"
                 id="nice-to-have-skills"
                 tags={structured.niceToHaveSkills}
                 onChange={(t) => set("niceToHaveSkills", t)}
@@ -533,63 +523,62 @@ export default function JobDescriptionForm({
 
             <div className="h-px bg-[var(--border)]" />
 
-            {/* Section: Responsibilities */}
+            {/* Section: Responsibilities + Experience/Education side by side */}
             <div>
               <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">Details</div>
-              <label className={labelCls}>Responsibilities</label>
-              <textarea
-                className={inputCls}
-                rows={4}
-                value={structured.responsibilities}
-                onChange={(e) => set("responsibilities", e.target.value)}
-                placeholder="Describe the key duties and expectations for this role…"
-                disabled={disabled}
-              />
-            </div>
-
-            <div className="h-px bg-[var(--border)]" />
-
-            {/* Section: Experience & Education */}
-            <div>
-              <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">Requirements</div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelCls}>Experience range</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number" min={0} max={20}
-                      className={inputCls}
-                      style={{ width: 60, textAlign: "center" }}
-                      value={structured.experienceRange.min}
-                      onChange={(e) => set("experienceRange", { ...structured.experienceRange, min: +e.target.value })}
-                      disabled={disabled}
-                    />
-                    <span className="text-[13px] text-[var(--text-muted)]">to</span>
-                    <input
-                      type="number" min={0} max={30}
-                      className={inputCls}
-                      style={{ width: 60, textAlign: "center" }}
-                      value={structured.experienceRange.max}
-                      onChange={(e) => set("experienceRange", { ...structured.experienceRange, max: +e.target.value })}
-                      disabled={disabled}
-                    />
-                    <span className="text-[12px] text-[var(--text-muted)]">yrs</span>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>Education required</label>
-                  <select
+                  <label className={labelCls}>Responsibilities</label>
+                  <textarea
                     className={inputCls}
-                    value={structured.educationRequired}
-                    onChange={(e) => set("educationRequired", e.target.value as EducationLevel)}
+                    rows={5}
+                    value={structured.responsibilities}
+                    onChange={(e) => set("responsibilities", e.target.value)}
+                    placeholder="Describe the key duties and expectations for this role…"
                     disabled={disabled}
-                  >
-                    <option value="any">Any / not specified</option>
-                    <option value="diploma">Diploma or equivalent</option>
-                    <option value="bachelor">Bachelor&apos;s degree</option>
-                    <option value="master">Master&apos;s degree</option>
-                    <option value="phd">PhD</option>
-                  </select>
+                  />
+                </div>
+
+                <div className="flex flex-col gap-4">
+
+                  <div>
+                    <label className={labelCls}>Education required</label>
+                    <select
+                      className={inputCls}
+                      value={structured.educationRequired}
+                      onChange={(e) => set("educationRequired", e.target.value as EducationLevel)}
+                      disabled={disabled}
+                    >
+                      <option value="any">Any / not specified</option>
+                      <option value="diploma">Diploma or equivalent</option>
+                      <option value="bachelor">Bachelor&apos;s degree</option>
+                      <option value="master">Master&apos;s degree</option>
+                      <option value="phd">PhD</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Experience range</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min={0} max={20}
+                        className={inputCls}
+                        style={{ width: 64, textAlign: "center" }}
+                        value={structured.experienceRange.min}
+                        onChange={(e) => set("experienceRange", { ...structured.experienceRange, min: +e.target.value })}
+                        disabled={disabled}
+                      />
+                      <span className="text-[13px] text-[var(--text-muted)]">to</span>
+                      <input
+                        type="number" min={0} max={30}
+                        className={inputCls}
+                        style={{ width: 64, textAlign: "center" }}
+                        value={structured.experienceRange.max}
+                        onChange={(e) => set("experienceRange", { ...structured.experienceRange, max: +e.target.value })}
+                        disabled={disabled}
+                      />
+                      <span className="text-[12px] text-[var(--text-muted)]">yrs</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

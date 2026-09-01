@@ -28,10 +28,10 @@ export default function SearchResultsView() {
     const meta = PROVIDERS[provider];
     const isFreeText = jdMode === "freetext";
 
-    const effectiveSkills =
-        isFreeText && extractedJD
-            ? [...new Set([...extractedJD.mandatorySkills, ...extractedJD.mustHaveSkills, ...extractedJD.niceToHaveSkills])]
-            : [];
+
+    const effectiveSkills = extractedJD
+        ? [...new Set([...extractedJD.mandatorySkills, ...extractedJD.mustHaveSkills, ...extractedJD.niceToHaveSkills])]
+        : [];
 
     const list = results ?? [];
     const filtered = list.filter((c) => filterSource === "all" || c.source === filterSource);
@@ -85,7 +85,7 @@ export default function SearchResultsView() {
             )}
 
             {/* stats */}
-            <div className="grid grid-cols-4 gap-3 mb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
                 {[
                     { label: "Profiles Found", value: list.length, icon: Globe },
                     { label: "Strong Matches", value: shortlisted.length, icon: CheckCircle },

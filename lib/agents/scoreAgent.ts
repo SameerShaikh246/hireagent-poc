@@ -32,16 +32,16 @@ function extractExperienceYears(text: string): number {
   return totalMonths > 0 ? Math.round(totalMonths / 12) : 0;
 }
 
-// EDUCATION
+// EDUCATION (max 25)
 function detectEducation(text: string): number {
   const t = text.toLowerCase();
-  if (t.includes("phd")) return 30;
+  if (t.includes("phd")) return 25;
   if (t.includes("master") || t.includes("mba") || t.includes("m.tech"))
-    return 25;
-  if (t.includes("bachelor") || t.includes("b.tech") || t.includes("degree"))
     return 20;
-  if (t.includes("diploma")) return 12;
-  
+  if (t.includes("bachelor") || t.includes("b.tech") || t.includes("degree"))
+    return 17;
+  if (t.includes("diploma")) return 10;
+
   return 5;
 }
 
@@ -85,21 +85,23 @@ export function scoreAgent(
     (skill) => !matchedSkills.includes(skill)
   );
 
+// SKILL (unchanged — already max 40, matches your target)
   const skillScore =
     jdSkills.length > 0
       ? Math.min(40, Math.round((matchedSkills.length / jdSkills.length) * 40))
       : 20;
 
-  // EXPERIENCE
+  // EXPERIENCE (max 35)
   const candidateYears = extractExperienceYears(resume.rawText);
 
   let experienceScore = 0;
-  if (candidateYears >= requiredYears) experienceScore = 30;
-  else if (candidateYears >= requiredYears - 1) experienceScore = 22;
-  else if (candidateYears >= requiredYears - 2) experienceScore = 15;
-  else if (candidateYears > 0) experienceScore = 8;
+  if (candidateYears >= requiredYears) experienceScore = 35;
+  else if (candidateYears >= requiredYears - 1) experienceScore = 26;
+  else if (candidateYears >= requiredYears - 2) experienceScore = 18;
+  else if (candidateYears > 0) experienceScore = 9;
   else experienceScore = 5;
-  // EDUCATION
+
+  // EDUCATION (max 25)
   const educationScore = detectEducation(resume.rawText);
 
   const total = skillScore + experienceScore + educationScore;

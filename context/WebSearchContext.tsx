@@ -8,7 +8,9 @@ interface RunSearchArgs {
     jdMode: JDMode;
     jdText: string;
     groqApiKey: string;
+    apiKey: string;
 }
+
 
 interface WebSearchContextValue {
     provider: Provider;
@@ -41,7 +43,13 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
     const [extractedJD, setExtractedJD] = useState<ExtractedJD | null>(null);
     const [warning, setWarning] = useState("");
 
-    const runSearch = async ({ structuredJD, jdMode, jdText, groqApiKey }: RunSearchArgs) => {
+    const runSearch = async ({
+        structuredJD,
+        jdMode,
+        jdText,
+        groqApiKey,
+        apiKey: searchApiKey,
+    }: RunSearchArgs) => {
         setLoading(true);
         setError("");
         try {
@@ -50,7 +58,7 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     provider,
-                    apiKey: apiKey.trim(),
+                    apiKey: searchApiKey.trim(),
                     jobTitle: structuredJD.title,
                     mustHaveSkills: structuredJD.mustHaveSkills,
                     mandatorySkills: structuredJD.mandatorySkills,

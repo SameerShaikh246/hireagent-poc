@@ -57,8 +57,6 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
 
-    
-
     // Structured JD input
     let structuredInput = null;
     if (jdMode === "structured") {
@@ -159,7 +157,7 @@ export async function POST(req: NextRequest) {
           apiKey,
         );
       }
-
+      // With ruleBlend = 0.4, finalScore is 40% rule-based, 60% AI.
       const overallScore = ruleScore.disqualified
         ? 0
         : Math.round(

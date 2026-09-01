@@ -41,10 +41,23 @@ export default function SearchSetupPanel() {
         : apiKeyOk && hasJD;
 
     const handleSearch = async () => {
-        setApiKey(localApiKey);
-        const ok = await runSearch({ structuredJD, jdMode, jdText, groqApiKey });
-        if (ok) router.push("/search/results");
+        const key = localApiKey.trim();
+
+        setApiKey(key);
+
+        const ok = await runSearch({
+            structuredJD,
+            jdMode,
+            jdText,
+            groqApiKey,
+            apiKey: key,
+        });
+
+        if (ok) {
+            router.push("/search/results");
+        }
     };
+
 
     return (
         <div className="max-w-4xl mx-auto py-10 px-5">
@@ -123,14 +136,14 @@ export default function SearchSetupPanel() {
                     <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest">
                         Free options
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                         <ProviderCard id="pdl" selected={provider === "pdl"} onSelect={() => { setProvider("pdl"); setLocalApiKey(""); }} />
                         <ProviderCard id="github" selected={provider === "github"} onSelect={() => { setProvider("github"); setLocalApiKey(""); }} />
                     </div>
                     <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest mt-1">
                         Web search fallbacks
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                         {(["tavily", "exa", "serper"] as Provider[]).map((id) => (
                             <ProviderCard key={id} id={id} selected={provider === id} onSelect={() => { setProvider(id); setLocalApiKey(""); }} />
                         ))}

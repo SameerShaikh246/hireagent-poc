@@ -41,7 +41,7 @@ export default function ScreeningResultsView() {
             </div>
 
             {/* Summary stats */}
-            <div className="grid grid-cols-4 gap-3 mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
                 {[
                     { label: "Total Screened", value: results.totalResumes, icon: ClipboardList },
                     { label: "Shortlisted", value: shortlisted.length, icon: CheckCircle },
@@ -70,7 +70,7 @@ export default function ScreeningResultsView() {
             {/* Mandatory skills used */}
             {results.mandatorySkills?.length > 0 && (
                 <div
-                    className="flex items-center gap-3 px-4 py-3 mb-6 rounded-[var(--radius-lg)]"
+                    className="flex items-center gap-3 px-4 py-3 mb-6 rounded-[var(--radius-lg)] flex-wrap"
                     style={{ background: "var(--danger-light)", border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)" }}
                 >
                     <Ban size={15} strokeWidth={2} color="var(--danger)" className="shrink-0" />

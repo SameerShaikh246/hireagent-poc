@@ -110,7 +110,11 @@ export default function ResumeUploader({ files, onChange, disabled }: Props) {
                 <span className="flex-1 text-[12px] text-[var(--text-primary)] overflow-hidden text-ellipsis whitespace-nowrap">{f.name}</span>
                 <span className="text-[11px] text-[var(--text-muted)] shrink-0">{formatSize(f.size)}</span>
                 {!disabled && (
-                  <button onClick={(e) => { e.stopPropagation(); remove(f.name); }} className="text-[14px] text-[var(--text-muted)] bg-transparent border-none leading-none px-0.5 cursor-pointer">×</button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); remove(f.name); }}
+                    aria-label={`Remove ${f.name}`}
+                    className="text-[14px] text-[var(--text-muted)] bg-transparent border-none leading-none px-0.5 cursor-pointer"
+                  >×</button>
                 )}
               </div>
             );

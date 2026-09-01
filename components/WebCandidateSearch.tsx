@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import type { StructuredJD } from "@/types";
-import { BarChart3, CheckCircle, Globe, Database } from "lucide-react";
+import type { StructuredJD, JDMode } from "@/types";
+import { BarChart3, CheckCircle, Globe, Database, Sparkles } from "lucide-react";
 
 export interface WebCandidate {
     id: string;
@@ -17,14 +17,24 @@ export interface WebCandidate {
     location?: string;
     experienceYears?: number;
     education?: string;
-    provider: "pdl" | "tavily" | "exa" | "serper";
+    provider: "pdl" | "tavily" | "exa" | "serper" | "github";
 }
 
-type Provider = "pdl" | "tavily" | "exa" | "serper";
+type Provider = "pdl" | "tavily" | "exa" | "serper" | "github";
+
+interface ExtractedJD {
+    jobTitle: string;
+    mandatorySkills: string[];
+    mustHaveSkills: string[];
+    niceToHaveSkills: string[];
+}
 
 interface Props {
     structuredJD: StructuredJD;
     jdText: string;
+    // NEW — needed to support free-text JD search
+    jdMode: JDMode;
+    groqApiKey: string;
 }
 
 // ─── Provider metadata ─────────────────────────────────────────────────────────
@@ -58,6 +68,20 @@ const PROVIDERS: Record<
         tip: "Structured database of 1.5B+ verified profiles with real skills, job history, education, and LinkedIn URLs. Not web scraping — actual person records. Best accuracy for both tech and non-tech roles.",
         isStructured: true,
         icon: "🗄️",
+    },
+    github: {
+        label: "GitHub",
+        free: "60/hr free, 5,000/hr with a token",
+        signupUrl: "https://github.com/settings/tokens",
+        placeholder: "ghp_… (optional — leave blank to use free tier)",
+        keyHint: "Optional. Settings → Developer settings → Personal access tokens → Generate (no scopes needed)",
+        bestFor: "Free • Technical roles",
+        badgeBg: "#dcfce7",
+        badgeColor: "#166534",
+        badgeBorder: "#86efac",
+        tip: "Searches real GitHub profiles by location + language + bio keywords, then pulls each profile's bio, company, and repo activity directly from GitHub's API. Completely free, no signup required — add a personal access token only if you hit the 60/hr rate limit.",
+        isStructured: false,
+        icon: "🐙",
     },
     tavily: {
         label: "Tavily",
@@ -538,7 +562,7 @@ function ProviderCard({
 }
 
 // ─── Main component ────────────────────────────────────────────────────────────
-export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
+export default function WebCandidateSearch({ structuredJD, jdText, jdMode, groqApiKey }: Props) {
     const [provider, setProvider] = useState<Provider>("pdl");
     const [apiKey, setApiKey] = useState("");
     const [loading, setLoading] = useState(false);
@@ -552,18 +576,41 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
     >("all");
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [showSetup, setShowSetup] = useState(true);
+    const [warning, setWarning] = useState("");
 
-    const allSkills = [
+    // What Groq inferred from a free-text JD, filled in after search
+    const [extractedInfo, setExtractedInfo] = useState<ExtractedJD | null>(null);
+
+    const isFreeText = jdMode === "freetext";
+
+    const structuredSkills = [
         ...new Set([
             ...structuredJD.mandatorySkills,
             ...structuredJD.mustHaveSkills,
             ...structuredJD.niceToHaveSkills,
         ]),
     ];
+
+    // Skills used for match bars / chips — from Groq extraction in free-text
+    // mode (once a search has run), otherwise the structured JD as before.
+    const effectiveSkills =
+        isFreeText && extractedInfo
+            ? [
+                ...new Set([
+                    ...extractedInfo.mandatorySkills,
+                    ...extractedInfo.mustHaveSkills,
+                    ...extractedInfo.niceToHaveSkills,
+                ]),
+            ]
+            : structuredSkills;
+
     const meta = PROVIDERS[provider];
 
-    const canSearch =
-        apiKey.trim().length > 4 &&
+    const apiKeyOk = provider === "github" ? true : apiKey.trim().length > 4;
+
+    const canSearch = isFreeText
+        ? apiKeyOk && groqApiKey.trim().length > 10 && jdText.trim().length >= 20
+        : apiKeyOk &&
         (structuredJD.title.trim().length > 0 ||
             structuredJD.mustHaveSkills.length > 0 ||
             structuredJD.mandatorySkills.length > 0);
@@ -585,7 +632,9 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                     mandatorySkills: structuredJD.mandatorySkills,
                     niceToHaveSkills: structuredJD.niceToHaveSkills,
                     roleType: structuredJD.roleType,
+                    jdMode,
                     jdText,
+                    groqApiKey: groqApiKey.trim(),
                 }),
             });
             const data = await res.json();
@@ -594,6 +643,8 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
             setTotalFound(data.totalFound);
             setSearchedAt(data.searchedAt);
             setCreditsUsed(data.creditsUsed);
+            setExtractedInfo(data.extractedJD ?? null);
+            setWarning(data.warning ?? null);
             setShowSetup(false);
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Unknown error");
@@ -645,14 +696,26 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                             Choose provider
                         </div>
 
-                        {/* Provider cards — PDL on top row, web fallbacks on second */}
+                        {/* Provider cards — free options first, then paid web fallbacks */}
                         <div className="flex flex-col gap-2 mb-4">
+                            <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest mt-1">
+                                Free options
+                            </div>
                             <div className="flex gap-2">
                                 <ProviderCard
                                     id="pdl"
                                     selected={provider === "pdl"}
                                     onSelect={() => {
                                         setProvider("pdl");
+                                        setApiKey("");
+                                        setError("");
+                                    }}
+                                />
+                                <ProviderCard
+                                    id="github"
+                                    selected={provider === "github"}
+                                    onSelect={() => {
+                                        setProvider("github");
                                         setApiKey("");
                                         setError("");
                                     }}
@@ -704,30 +767,56 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                         </p>
                     </div>
 
-                    {/* JD context */}
-                    {(structuredJD.title || allSkills.length > 0) && (
+                    {/* JD context — structured mode shows the fields directly */}
+                    {!isFreeText && (structuredJD.title || structuredSkills.length > 0) && (
                         <div className="px-3 py-2.5 bg-(--bg) border border-(--border) rounded-(--radius) text-[12px] text-(--text-secondary)">
                             <span className="font-semibold text-(--text-primary)">
                                 {structuredJD.title || "Untitled role"}
                             </span>
-                            {allSkills.length > 0 && (
+                            {structuredSkills.length > 0 && (
                                 <>
                                     {" "}
                                     ·{" "}
                                     <span className="text-(--accent)">
-                                        {allSkills.slice(0, 5).join(", ")}
-                                        {allSkills.length > 5 ? " …" : ""}
+                                        {structuredSkills.slice(0, 5).join(", ")}
+                                        {structuredSkills.length > 5 ? " …" : ""}
                                     </span>
                                 </>
                             )}
                         </div>
                     )}
 
+                    {/* Free-text mode — explain the auto-extraction step */}
+                    {isFreeText && (
+                        <div className="flex items-start gap-2.5 px-3 py-2.5 bg-[#eff6ff] border border-[#bfdbfe] rounded-lg text-[12px] text-[#1e3a8a]">
+                            <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>
+                                Free-text JD detected — before searching, Groq will read your
+                                job description and auto-detect the role title and required
+                                skills.
+                                {!groqApiKey.trim() && (
+                                    <>
+                                        {" "}
+                                        Add your Groq API key in the setup step above to enable
+                                        this.
+                                    </>
+                                )}
+                                {jdText.trim().length > 0 && jdText.trim().length < 20 && (
+                                    <> Write a bit more detail in the JD first.</>
+                                )}
+                            </span>
+                        </div>
+                    )}
+
                     {!canSearch && (
                         <p className="text-[12px] text-(--text-muted) text-center">
-                            {!apiKey.trim()
+                            {!apiKeyOk
                                 ? `Paste your ${meta.label} API key above`
-                                : "Add a job title or skills to the JD first"}
+                                : isFreeText
+                                    ? !groqApiKey.trim()
+                                        ? "Add your Groq API key in the setup step above"
+                                        : "Write at least 20 characters of job description first"
+                                    : "Add a job title or skills to the JD first"}
                         </p>
                     )}
 
@@ -763,9 +852,11 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                         {loading ? (
                             <span className="flex items-center justify-center gap-2">
                                 <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                                {provider === "pdl"
-                                    ? "Querying People Data Labs…"
-                                    : `Searching via ${meta.label}…`}
+                                {isFreeText
+                                    ? "Reading JD & searching…"
+                                    : provider === "pdl"
+                                        ? "Querying People Data Labs…"
+                                        : `Searching via ${meta.label}…`}
                             </span>
                         ) : provider === "pdl" ? (
                             "🗄️ Find Candidates via PDL"
@@ -779,6 +870,22 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
             {/* ── Results ── */}
             {results && (
                 <div className="flex flex-col gap-4">
+
+                    {warning && (
+                        <div className="flex items-start gap-2.5 px-4 py-3 bg-[#fffbeb] border border-[#fcd34d] rounded-lg text-[12px] text-[#92400e]">
+                            <span className="text-[15px] shrink-0">⚠️</span>
+
+                            <div>
+                                <div className="font-semibold mb-0.5">
+                                    Warning
+                                </div>
+                                <div className="leading-relaxed">
+                                    {warning}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* stats */}
                     <div className="grid grid-cols-4 gap-3">
                         {[
@@ -825,6 +932,27 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                             </div>
                         ))}
                     </div>
+
+                    {/* Free-text: show what Groq extracted this search used */}
+                    {isFreeText && extractedInfo && (
+                        <div className="flex items-start gap-2.5 px-3 py-2.5 bg-[#eff6ff] border border-[#bfdbfe] rounded-lg text-[12px] text-[#1e3a8a]">
+                            <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>
+                                <span className="font-semibold">
+                                    {extractedInfo.jobTitle || "Untitled role"}
+                                </span>
+                                {effectiveSkills.length > 0 && (
+                                    <>
+                                        {" "}
+                                        ·{" "}
+                                        {effectiveSkills.slice(0, 6).join(", ")}
+                                        {effectiveSkills.length > 6 ? " …" : ""}
+                                    </>
+                                )}
+                                {" "}— auto-detected from your JD by Groq.
+                            </span>
+                        </div>
+                    )}
 
                     {/* PDL accuracy note */}
                     {provider === "pdl" && (
@@ -907,7 +1035,7 @@ export default function WebCandidateSearch({ structuredJD, jdText }: Props) {
                                     rank={i + 1}
                                     expandedId={expandedId}
                                     setExpandedId={setExpandedId}
-                                    allSkills={allSkills}
+                                    allSkills={effectiveSkills}
                                 />
                             ))}
                         </div>

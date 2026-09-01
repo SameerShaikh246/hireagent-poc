@@ -61,7 +61,7 @@ Return ONLY a raw JSON object — no markdown, no code fences:
 }`;
 
   try {
-    const raw = await groqGenerate(prompt, { apiKey, maxTokens: 1500, temperature: 0.1 });
+    const raw = await groqGenerate(prompt, { apiKey, model: "llama-3.3-70b-versatile", maxTokens: 1500, temperature: 0.1 });
     const cleaned = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON in JD intelligence response");

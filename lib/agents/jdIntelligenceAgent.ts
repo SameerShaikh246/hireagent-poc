@@ -20,48 +20,89 @@ STRUCTURED JD FIELDS (recruiter-entered — may contain errors):
 `
     : "No structured fields provided — extract from free-text JD only.";
 
-  const prompt = `You are a senior talent intelligence system. Analyze the job description and identify any issues with the recruiter's input.
+ const prompt = `You are a JD intelligence system. Analyze this job description and recruiter-entered structured JD data.
 
 ${structuredContext}
 
-JOB DESCRIPTION TEXT:
+JOB DESCRIPTION:
 ${jdText.slice(0, 3000)}
 
-Your task:
-1. Extract ALL technical and domain skills genuinely required for this role
-2. Classify each as must-have (critical for the job) or nice-to-have (beneficial)
-3. Detect if recruiter made errors: missing critical skills, wrong classification, synonyms/variations
-4. Infer the correct role type (technical vs non-technical)
-5. Validate experience range against industry norms for the role title
+TASK:
+1. Extract skills relevant to THIS JD.
+2. Classify them as must-have or nice-to-have.
+3. Compare against recruiter fields and identify missing, incorrect, unnecessary, or normalized skills.
+4. Determine role type: technical or non-technical.
+5. Correct experience range only when supported by the JD.
 
-Rules:
-- Normalize skill names to canonical forms (e.g. "reactjs" → "react", "hr management" → "employee relations")
-- Flag skills that appear in must-have but are actually nice-to-have for the role level
-- Add missing critical skills that the JD clearly implies but recruiter forgot to list
-- Remove skills that don't belong to this role type
-- For non-technical roles, include domain vocabulary (HR, Finance, Ops keywords) as skills
+SKILL INFERENCE:
+Limited shallow inference is allowed.
 
-Return ONLY a raw JSON object — no markdown, no code fences:
+You MAY add direct foundational dependencies:
+- React -> JavaScript
+- TypeScript -> JavaScript
+- React -> HTML/CSS
+- Next.js -> React
+- Node.js -> JavaScript
+- Django -> Python
+- Spring Boot -> Java
+- .NET -> C#
+
+Do NOT make broad industry assumptions.
+
+Do NOT infer:
+- React -> state management
+- React -> testing/Jest/Cypress
+- React -> responsive design
+- React -> CI/CD
+- React -> Agile
+- React -> AWS/Docker
+- Senior -> architecture/system design/mentoring
+- Product team -> Agile
+
+Do not chain inference. For example:
+React -> JavaScript -> testing -> CI/CD is NOT allowed.
+
+Add at most 1-3 directly implied foundational skills.
+
+EXPERIENCE:
+If the JD does not explicitly specify experience, return:
+min: 0, max: 0
+Do not infer experience from "Senior" or "Lead".
+
+NORMALIZATION:
+Use canonical names:
+ReactJS/React.js -> react
+Next.js/NextJS -> next.js
+Node.js/NodeJS/Node -> node.js
+REST APIs/REST API -> rest api
+Git -> git
+
+For changes, report meaningful corrections only.
+
+The final skills must represent explicit JD requirements plus a small number of direct foundational implications, NOT an ideal candidate profile.
+
+Return ONLY raw JSON:
+
 {
-  "mustHaveSkills": ["skill1", "skill2"],
-  "niceToHaveSkills": ["skill3", "skill4"],
-  "correctedExperienceRange": { "min": 0, "max": 0 },
-  "roleType": "technical or non-technical",
+  "mustHaveSkills": [],
+  "niceToHaveSkills": [],
+  "correctedExperienceRange": {"min": 0, "max": 0},
+  "roleType": "technical",
   "confidence": 0.0,
-  "warnings": ["warning string"],
+  "warnings": [],
   "changes": [
     {
       "type": "added|removed|reclassified|normalized|experience_adjusted",
-      "skill": "skill name (optional)",
-      "from": "original value (optional)",
-      "to": "new value (optional)",
-      "reason": "explanation"
+      "skill": "",
+      "from": "",
+      "to": "",
+      "reason": ""
     }
   ]
 }`;
 
   try {
-    const raw = await groqGenerate(prompt, { apiKey, model: "llama-3.3-70b-versatile", maxTokens: 1500, temperature: 0.1 });
+    const raw = await groqGenerate(prompt, { apiKey, model: "openai/gpt-oss-120b", maxTokens: 1500, temperature: 0.1 });
     const cleaned = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON in JD intelligence response");

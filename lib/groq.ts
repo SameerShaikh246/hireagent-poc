@@ -6,6 +6,7 @@ interface GroqOptions {
   responseFormat?: {
     type: "text" | "json_object";
   };
+  reasoningFormat?: "hidden" | "raw" | "parsed";
 }
 
 export async function groqGenerate(
@@ -16,8 +17,9 @@ export async function groqGenerate(
     apiKey,
     maxTokens = 1000,
     temperature = 0.1,
-    model = "llama-3.1-8b-instant", // "llama-3.3-70b-versatile"
+    model = "openai/gpt-oss-20b",
     responseFormat,
+    reasoningFormat,
   } = options;
 
   const res = await fetch(
@@ -32,16 +34,28 @@ export async function groqGenerate(
         model,
         max_tokens: maxTokens,
         temperature,
+
         ...(responseFormat
-          ? { response_format: responseFormat } 
+          ? { response_format: responseFormat }
           : {}),
-        messages: [{ role: "user", content: prompt }],
+
+        ...(reasoningFormat
+          ? { reasoning_format: reasoningFormat }
+          : {}),
+
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
       }),
     },
   );
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+
     throw new Error(
       `Groq API error ${res.status}: ${JSON.stringify(err)}`,
     );

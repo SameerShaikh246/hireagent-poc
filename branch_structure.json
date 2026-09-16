@@ -1,0 +1,18 @@
+{
+  "default_branch": "development",
+  "branches": [
+    "development",
+    "feat/convert-cv",
+    "feat/ui-polish-responsiveness-accessibility"
+  ],
+  "parent": {
+    "development": null,
+    "feat/convert-cv": "development",
+    "feat/ui-polish-responsiveness-accessibility": "development"
+  },
+  "order": [
+    "development",
+    "feat/convert-cv",
+    "feat/ui-polish-responsiveness-accessibility"
+  ]
+}

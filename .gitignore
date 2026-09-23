@@ -45,3 +45,4 @@ next-env.d.ts
 .windsurf/
 .claude/
 node_modules/
+/generated/prisma/

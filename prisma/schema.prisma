@@ -1,0 +1,227 @@
+// ─────────────────────────────────────────────────────────────────────────
+// HireAgent — Prisma schema (Phase 2: DB foundation)
+// Target: Supabase PostgreSQL
+//
+// Design notes:
+// - Candidate = one deduplicated real person, built up across providers.
+// - CandidateIdentity = every known "handle" for a candidate (LinkedIn URL,
+//   GitHub URL, PDL id, etc). Dedup works by looking up incoming identities
+//   here BEFORE deciding whether to create a new Candidate row (Phase 4).
+// - CandidateSkill / CandidateCertification = the candidate's own intrinsic
+//   profile, aggregated across every search that ever touched them.
+//   matched/missing skills for a SPECIFIC job description are NOT stored
+//   here — those are computed at query time and snapshotted per-search in
+//   SearchResult, since "matched" only means something relative to a JD.
+// - Search / SearchResult / SearchHistory = Phase 4/5 (dedup + 30-day rule).
+// - openToWork / salary / certifications fields exist now even though PDL's
+//   current trial doesn't populate certifications/salary — kept so no
+//   migration is needed if the PDL plan is upgraded later.
+// ─────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Provider {
+  PDL
+  GITHUB
+  TAVILY
+  EXA
+  SERPER
+  INTERNAL_DB
+}
+
+enum IdentityType {
+  LINKEDIN_URL
+  GITHUB_URL
+  PORTFOLIO_URL
+  PDL_ID
+  GITHUB_LOGIN
+  EMAIL_HASH
+  NAME_COMPANY // fallback, lowest-confidence identity
+}
+
+enum OpenToWorkStatus {
+  YES
+  NO
+  UNKNOWN
+}
+
+enum SkillSource {
+  PDL_STRUCTURED   // came directly from PDL's skills[] array
+  GITHUB_LANGUAGE  // confirmed via GitHub language: query match
+  BIO_EXTRACTED    // matched against bio/profile free text (Tavily/Exa/Serper/GitHub bio)
+  GROQ_ENRICHED    // added/confirmed by Groq cleanup step
+}
+
+enum CertificationSource {
+  PDL
+  WEB_EXTRACTED // found in scraped profile text via Groq
+}
+
+model Candidate {
+  id                String    @id @default(cuid())
+
+  // Core profile — this is the CURRENT best-known snapshot, refreshed
+  // whenever a newer, higher-confidence provider result comes in.
+  fullName          String
+  currentTitle      String?
+  currentCompany    String?
+  location          String?
+  summary           String?
+  experienceYears   Int?
+  educationLevel    String?   // highest degree, free text (e.g. "Master's")
+
+  // Phase 6 — Salary (PDL-only today; always null on other providers)
+  estimatedSalaryMin      Int?
+  estimatedSalaryMax      Int?
+  estimatedSalaryCurrency String?  @default("USD")
+  salarySource             String? // e.g. "PDL inferred_salary" — null = not available
+
+  // Phase 6 — Open to Work
+  openToWork         OpenToWorkStatus @default(UNKNOWN)
+  openToWorkEvidence String?          // raw supporting snippet, e.g. GitHub hireable=true, or bio phrase
+  openToWorkSource   String?          // e.g. "github_hireable_field", "bio_phrase_match:tavily"
+
+  // Phase 4 — tracks which provider tier last wrote fullName/currentTitle/
+  // currentCompany/location/summary/experienceYears/educationLevel, so a
+  // later low-trust result (e.g. a Serper snippet) can never overwrite
+  // higher-trust data (e.g. a PDL-verified title). See PROVIDER_TRUST in
+  // lib/dedup/upsertCandidate.ts.
+  profileTrustScore  Int       @default(0)
+
+  firstSeenAt        DateTime  @default(now())
+  lastSeenAt          DateTime  @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  identities          CandidateIdentity[]
+  skills              CandidateSkill[]
+  certifications      CandidateCertification[]
+  providerRecords     CandidateProvider[]
+  searchResults       SearchResult[]
+  searchHistory       SearchHistory[]
+
+  @@index([fullName])
+}
+
+// One row per known "handle" for a candidate. Dedup logic (Phase 4) looks
+// these up in priority order before creating a new Candidate:
+// PDL_ID/GITHUB_LOGIN > LINKEDIN_URL > GITHUB_URL > PORTFOLIO_URL >
+// EMAIL_HASH > NAME_COMPANY.
+model CandidateIdentity {
+  id           String       @id @default(cuid())
+  candidateId  String
+  candidate    Candidate    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  type         IdentityType
+  value        String       // normalized (lowercased, trimmed, no protocol for URLs)
+  createdAt    DateTime     @default(now())
+
+  @@unique([type, value]) // this IS the dedup lookup key
+  @@index([candidateId])
+}
+
+// Raw per-provider record, kept for audit/debug and re-enrichment without
+// re-hitting the API. rawData stores the full provider payload as-is.
+model CandidateProvider {
+  id                  String    @id @default(cuid())
+  candidateId         String
+  candidate           Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  provider            Provider
+  providerCandidateId String?   // PDL's own id, GitHub login, etc — null for Tavily/Exa/Serper (no stable id)
+  profileUrl          String?
+  rawData             Json      // full raw provider response for this candidate
+  fetchedAt           DateTime  @default(now())
+
+  @@index([candidateId])
+  @@index([provider, providerCandidateId])
+}
+
+// Candidate's own aggregated skill profile (NOT per-search matched/missing —
+// see SearchResult for that). Confirmed skills accumulate across every
+// search that has ever surfaced this candidate.
+model CandidateSkill {
+  id          String      @id @default(cuid())
+  candidateId String
+  candidate   Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  skill       String      // canonical name (see skillAliases.ts canonicalSkill())
+  source      SkillSource
+  confidence  Float?      // 0-1, mainly for GROQ_ENRICHED / BIO_EXTRACTED
+  createdAt   DateTime    @default(now())
+
+  @@unique([candidateId, skill])
+  @@index([candidateId])
+}
+
+model CandidateCertification {
+  id          String              @id @default(cuid())
+  candidateId String
+  candidate   Candidate           @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  name        String
+  issuer      String?
+  source      CertificationSource
+  sourceUrl   String?             // link to the profile/page it was found on
+  confidence  Float?
+  createdAt   DateTime            @default(now())
+
+  @@index([candidateId])
+}
+
+// One row per search run (button click), regardless of provider.
+model Search {
+  id                String    @id @default(cuid())
+  provider          Provider
+  jobTitle          String
+  mandatorySkills   String[]
+  mustHaveSkills    String[]
+  niceToHaveSkills  String[]
+  location          String?
+  freshSearch       Boolean   @default(false) // true = bypass 30-day exclusion for this run
+  totalFound        Int?
+  creditsUsed       Int?
+  createdAt         DateTime  @default(now())
+
+  results           SearchResult[]
+}
+
+// Snapshot of a candidate's relevance FOR THIS SPECIFIC search — this is
+// where matchedSkills/missingSkills/relevanceScore live, since those are
+// only meaningful relative to one JD, not intrinsic to the candidate.
+model SearchResult {
+  id                  String    @id @default(cuid())
+  searchId            String
+  search              Search    @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  candidateId         String
+  candidate           Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  provider            Provider
+  relevanceScore      Int
+  matchedSkills       String[]
+  missingSkills       String[]
+  excludedByFreshness Boolean   @default(false) // true = suppressed from results by the 30-day rule
+  createdAt           DateTime  @default(now())
+
+  @@index([searchId])
+  @@index([candidateId])
+}
+
+// Phase 5 — 30-day freshness rule. Scoped per (candidate, search-context)
+// rather than globally, so a candidate excluded from a "React Developer"
+// search can still surface for an unrelated "Data Analyst" search run the
+// next day. searchContextHash = hash of normalized(jobTitle + sorted all-skills).
+model SearchHistory {
+  id                 String    @id @default(cuid())
+  candidateId        String
+  candidate          Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  searchContextHash  String
+  jobTitleSnapshot   String    // human-readable, for debugging/display only
+  firstSeenAt        DateTime  @default(now())
+  lastSeenAt         DateTime  @updatedAt
+  timesSeen          Int       @default(1)
+
+  @@unique([candidateId, searchContextHash])
+  @@index([searchContextHash])
+}

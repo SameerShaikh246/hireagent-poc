@@ -1,5 +1,8 @@
 import { groqGenerate } from "@/lib/groq";
 import { NextRequest, NextResponse } from "next/server";
+import { normalizePDLCandidate, normalizeGitHubCandidate, normalizeWebCandidate } from "@/lib/normalizer/normalizeCandidate";
+import { upsertCandidate } from "@/lib/dedup/upsertCandidate";
+import { buildSearchContextHash, filterByFreshness, recordSearchHistory } from "@/lib/searchHistory/freshness";
 
 // ─── Shared types ──────────────────────────────────────────────────────────────
 export interface WebCandidate {
@@ -19,6 +22,11 @@ export interface WebCandidate {
   experienceYears?: number;         // PDL-derived
   education?: string;               // highest degree
   provider: "pdl" | "tavily" | "exa" | "serper" | "github";
+  // Added for DB persistence / dedup (Phase 3–5):
+  rawProvider?: unknown;       // raw PDL record / GitHub profile — feeds the normalizer
+  confirmedSkills?: string[];  // GitHub only: matchedSkills confirmed via a language: query
+  candidateId?: string;        // set after upsertCandidate() — the DB row this maps to
+
 }
 
 export interface CandidateSearchResponse {
@@ -35,6 +43,7 @@ export interface CandidateSearchResponse {
     mustHaveSkills: string[];
     niceToHaveSkills: string[];
   };
+  suppressedByFreshness?: number;
 }
 
 
@@ -418,7 +427,7 @@ ${JSON.stringify(input, null, 2)}
 
         experienceYears:
           typeof item.experienceYears === "number" &&
-          item.experienceYears >= 0
+            item.experienceYears >= 0
             ? Math.round(item.experienceYears)
             : candidates[item.index].experienceYears,
 
@@ -692,10 +701,10 @@ async function searchPDL(
   const records: PDLPersonRecord[] = data.data ?? [];
   const totalFound: number = data.total ?? records.length;
   const allSkills = getAllJDSkills(
-  mandatorySkills,
-  mustHaveSkills,
-  niceToHaveSkills,
-);
+    mandatorySkills,
+    mustHaveSkills,
+    niceToHaveSkills,
+  );
 
 
   const candidates: WebCandidate[] = records.map((r, i) => {
@@ -730,6 +739,7 @@ async function searchPDL(
       location: r.location_name,
       experienceYears: expYears > 0 ? expYears : undefined,
       education: edu,
+      rawProvider: r,
       provider: "pdl",
     };
   });
@@ -825,7 +835,7 @@ async function searchTavily(query: string, apiKey: string): Promise<RawResult[]>
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: apiKey, query: `${query} (India OR Bangalore OR Hyderabad OR Pune)`, search_depth: "advanced", max_results: 20,  include_raw_content: true }),
+    body: JSON.stringify({ api_key: apiKey, query: `${query} (India OR Bangalore OR Hyderabad OR Pune)`, search_depth: "advanced", max_results: 20, include_raw_content: true }),
   });
   if (!res.ok) throw new Error(res.status === 401 ? "Invalid Tavily API key" : `Tavily error ${res.status}`);
   const data = await res.json();
@@ -879,11 +889,11 @@ async function runWebSearch(
   groqApiKey?: string,
 ): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
   const skills = [...new Set([...mandatorySkills, ...mustHaveSkills])].slice(0, 4).join(" ");
- const allSkills = getAllJDSkills(
-  mandatorySkills,
-  mustHaveSkills,
-  niceToHaveSkills,
-);
+  const allSkills = getAllJDSkills(
+    mandatorySkills,
+    mustHaveSkills,
+    niceToHaveSkills,
+  );
 
 
   const queries = [
@@ -956,11 +966,11 @@ async function planGitHubQuery(
   niceToHaveSkills: string[],
   groqApiKey: string,
 ): Promise<GitHubQueryPlan> {
- const allSkills = getAllJDSkills(
-  mandatorySkills,
-  mustHaveSkills,
-  niceToHaveSkills,
-);
+  const allSkills = getAllJDSkills(
+    mandatorySkills,
+    mustHaveSkills,
+    niceToHaveSkills,
+  );
 
 
   const prompt = `You are building GitHub user-search queries for a recruiter.
@@ -1002,17 +1012,17 @@ Return ONLY valid JSON, nothing else:
 
     const languages: GitHubLanguagePlan[] = Array.isArray(parsed.languages)
       ? parsed.languages
-          .map((entry: unknown) => {
-            const e = entry as { language?: unknown; skills?: unknown };
-            return {
-              language: String(e?.language ?? "").toLowerCase().trim(),
-              skills: Array.isArray(e?.skills)
-                ? sanitizeToAllowedSkills(e.skills.map(String), allSkills)
-                : [],
-            };
-          })
-          .filter((e: GitHubLanguagePlan) => GITHUB_VALID_LANGUAGES.has(e.language) && e.skills.length > 0)
-          .slice(0, 3)
+        .map((entry: unknown) => {
+          const e = entry as { language?: unknown; skills?: unknown };
+          return {
+            language: String(e?.language ?? "").toLowerCase().trim(),
+            skills: Array.isArray(e?.skills)
+              ? sanitizeToAllowedSkills(e.skills.map(String), allSkills)
+              : [],
+          };
+        })
+        .filter((e: GitHubLanguagePlan) => GITHUB_VALID_LANGUAGES.has(e.language) && e.skills.length > 0)
+        .slice(0, 3)
       : [];
 
     const keywords = Array.isArray(parsed.keywords)
@@ -1116,12 +1126,12 @@ async function fetchGitHubJSON(
 
   const data = await res.json();
 
-return {
-  data,
-  rateLimitRemaining: remaining ? Number(remaining) : undefined,
-  rateLimitLimit: limit ? Number(limit) : undefined,
-  rateLimitReset: reset ? Number(reset) : undefined,
-};
+  return {
+    data,
+    rateLimitRemaining: remaining ? Number(remaining) : undefined,
+    rateLimitLimit: limit ? Number(limit) : undefined,
+    rateLimitReset: reset ? Number(reset) : undefined,
+  };
 
 }
 
@@ -1134,16 +1144,16 @@ async function searchGitHubAPI(
   apiKey: string,
   location: string = DEFAULT_LOCATION,
   groqApiKey?: string,
-):  Promise<{
+): Promise<{
   candidates: WebCandidate[];
   totalFound: number;
   warning?: string;
-}>  {
+}> {
   const allSkills = getAllJDSkills(
-  mandatorySkills,
-  mustHaveSkills,
-  niceToHaveSkills,
-);
+    mandatorySkills,
+    mustHaveSkills,
+    niceToHaveSkills,
+  );
 
 
   if (!groqApiKey?.trim()) {
@@ -1177,20 +1187,20 @@ async function searchGitHubAPI(
     variants.push({ q: `type:user location:"${location}" ${jobTitle} repos:>=1`, confirmedSkills: [] });
   }
 
- const settled = await Promise.allSettled(
-  variants.map((v) =>
-    fetchGitHubJSON(
-      `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=10&sort=repositories&order=desc`,
-      headers,
-    ).then((result) => ({
-      data: result.data,
-      confirmedSkills: v.confirmedSkills,
-      rateLimitRemaining: result.rateLimitRemaining,
-      rateLimitLimit: result.rateLimitLimit,
-      rateLimitReset: result.rateLimitReset,
-    })),
-  ),
-);
+  const settled = await Promise.allSettled(
+    variants.map((v) =>
+      fetchGitHubJSON(
+        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=10&sort=repositories&order=desc`,
+        headers,
+      ).then((result) => ({
+        data: result.data,
+        confirmedSkills: v.confirmedSkills,
+        rateLimitRemaining: result.rateLimitRemaining,
+        rateLimitLimit: result.rateLimitLimit,
+        rateLimitReset: result.rateLimitReset,
+      })),
+    ),
+  );
 
 
   const anySuccessWithItems = settled.some(
@@ -1203,47 +1213,47 @@ async function searchGitHubAPI(
     const fallbackQ = primary
       ? `type:user location:"${location}" language:${primary.language}`
       : `type:user location:"${location}" ${jobTitle}`;
-  fallbackSettled = await Promise.allSettled([
-  fetchGitHubJSON(
-    `https://api.github.com/search/users?q=${encodeURIComponent(
-      fallbackQ
-    )}&per_page=10&sort=followers&order=desc`,
-    headers,
-  ).then((result) => ({
-    data: result.data,
-    confirmedSkills: primary?.skills ?? [],
-    rateLimitRemaining: result.rateLimitRemaining,
-    rateLimitLimit: result.rateLimitLimit,
-    rateLimitReset: result.rateLimitReset,
-  })),
-]);
+    fallbackSettled = await Promise.allSettled([
+      fetchGitHubJSON(
+        `https://api.github.com/search/users?q=${encodeURIComponent(
+          fallbackQ
+        )}&per_page=10&sort=followers&order=desc`,
+        headers,
+      ).then((result) => ({
+        data: result.data,
+        confirmedSkills: primary?.skills ?? [],
+        rateLimitRemaining: result.rateLimitRemaining,
+        rateLimitLimit: result.rateLimitLimit,
+        rateLimitReset: result.rateLimitReset,
+      })),
+    ]);
 
   }
-const allSettled = [...settled, ...fallbackSettled];
+  const allSettled = [...settled, ...fallbackSettled];
 
-let githubWarning: string | undefined;
+  let githubWarning: string | undefined;
 
-const rateLimitInfo = allSettled
-  .filter((r) => r.status === "fulfilled")
-  .map((r) => r.value)
-  .find((r) => r.rateLimitRemaining !== undefined);
+  const rateLimitInfo = allSettled
+    .filter((r) => r.status === "fulfilled")
+    .map((r) => r.value)
+    .find((r) => r.rateLimitRemaining !== undefined);
 
-if (!apiKey?.trim()) {
-  const remaining = rateLimitInfo?.rateLimitRemaining;
-  const limit = rateLimitInfo?.rateLimitLimit;
+  if (!apiKey?.trim()) {
+    const remaining = rateLimitInfo?.rateLimitRemaining;
+    const limit = rateLimitInfo?.rateLimitLimit;
 
-  if (remaining !== undefined) {
-    githubWarning =
-      `GitHub search is using the unauthenticated API. ` +
-      `You have ${remaining}${limit !== undefined ? ` of ${limit}` : ""} ` +
-      `requests remaining. ` +
-      `Add a GitHub Personal Access Token for higher rate limits.`;
-  } else {
-    githubWarning =
-      "GitHub search is using the unauthenticated API. " +
-      "Add a GitHub Personal Access Token for higher rate limits.";
+    if (remaining !== undefined) {
+      githubWarning =
+        `GitHub search is using the unauthenticated API. ` +
+        `You have ${remaining}${limit !== undefined ? ` of ${limit}` : ""} ` +
+        `requests remaining. ` +
+        `Add a GitHub Personal Access Token for higher rate limits.`;
+    } else {
+      githubWarning =
+        "GitHub search is using the unauthenticated API. " +
+        "Add a GitHub Personal Access Token for higher rate limits.";
+    }
   }
-}
 
 
   let totalFound = 0;
@@ -1262,19 +1272,19 @@ if (!apiKey?.trim()) {
     }
   }
 
-const profileSettled = await Promise.allSettled(
-  items.slice(0, 20).map((item) =>
-    fetchGitHubJSON(
-      `https://api.github.com/users/${item.login}`,
-      headers,
+  const profileSettled = await Promise.allSettled(
+    items.slice(0, 20).map((item) =>
+      fetchGitHubJSON(
+        `https://api.github.com/users/${item.login}`,
+        headers,
+      ),
     ),
-  ),
-);
+  );
 
-let candidates: WebCandidate[] = profileSettled
-  .filter((p) => p.status === "fulfilled")
-  .map((p) => p.value.data)
-  .map((p) => {
+  let candidates: WebCandidate[] = profileSettled
+    .filter((p) => p.status === "fulfilled")
+    .map((p) => p.value.data)
+    .map((p) => {
 
       const confirmed = [...(loginToConfirmedSkills.get(p.login) ?? [])];
       const combined = `${p.bio ?? ""} ${p.company ?? ""}`;
@@ -1307,6 +1317,8 @@ let candidates: WebCandidate[] = profileSettled
         missingSkills,
         relevanceScore: score,
         location: p.location ?? undefined,
+        rawProvider: p,
+        confirmedSkills: confirmed,
         provider: "github" as const,
       };
     })
@@ -1318,10 +1330,10 @@ let candidates: WebCandidate[] = profileSettled
   }
 
   return {
-  candidates,
-  totalFound,
-  warning: githubWarning,
-};
+    candidates,
+    totalFound,
+    warning: githubWarning,
+  };
 
 }
 
@@ -1339,6 +1351,7 @@ export async function POST(req: NextRequest) {
       jdMode = "structured",
       jdText = "",
       groqApiKey = "",
+      freshSearch = false,
     }: {
       provider: Provider;
       apiKey: string;
@@ -1349,6 +1362,7 @@ export async function POST(req: NextRequest) {
       jdMode?: JDMode;
       jdText?: string;
       groqApiKey?: string;
+      freshSearch?: boolean;
     } = body;
 
     if (!["pdl", "tavily", "exa", "serper", "github"].includes(provider))
@@ -1393,9 +1407,11 @@ export async function POST(req: NextRequest) {
 
     if (!finalJobTitle.trim() && finalMustHaveSkills.length === 0 && finalMandatorySkills.length === 0)
       return NextResponse.json(
-        { error: jdMode === "freetext"
-          ? "Couldn't detect a role or skills from that JD — try structured JD mode instead."
-          : "Add a job title or skills to the JD first." },
+        {
+          error: jdMode === "freetext"
+            ? "Couldn't detect a role or skills from that JD — try structured JD mode instead."
+            : "Add a job title or skills to the JD first."
+        },
         { status: 400 },
       );
 
@@ -1410,12 +1426,12 @@ export async function POST(req: NextRequest) {
       niceToHaveSkills: finalNiceToHaveSkills,
     };
 
-let result: {
-  candidates: WebCandidate[];
-  totalFound: number;
-  creditsUsed?: number;
-  warning?: string;
-};
+    let result: {
+      candidates: WebCandidate[];
+      totalFound: number;
+      creditsUsed?: number;
+      warning?: string;
+    };
 
 
     if (provider === "pdl") {
@@ -1442,16 +1458,71 @@ let result: {
         groqApiKey.trim(),
       );
     }
+    // ─── Phase 3–5: normalize, dedupe/persist, apply 30-day freshness ─────────
+    // Fails OPEN by design: if the DB is unreachable, unconfigured, or anything
+    // here throws, the search still returns its normal results untouched.
+    // Persistence is additive — it must never be a hard dependency for the
+    // recruiter-facing search feature to keep working.
+    let suppressedByFreshness = 0;
+    try {
+      const allSkills = getAllJDSkills(finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
+      const searchContextHash = buildSearchContextHash(finalJobTitle, allSkills);
 
-   return NextResponse.json({
-  candidates: result.candidates,
-  totalFound: result.totalFound,
-  searchedAt: new Date().toISOString(),
-  provider,
-  creditsUsed: result.creditsUsed,
-  warning: result.warning,
-  extractedJD,
-} as CandidateSearchResponse);
+      // Sequential (not Promise.all) — avoids a race where the same person
+      // appearing twice in one result set (rare, but possible across
+      // providers) could create two Candidate rows instead of merging into one.
+      for (const candidate of result.candidates) {
+        let normalized;
+        if (candidate.provider === "pdl") {
+          normalized = normalizePDLCandidate(candidate.rawProvider as any, canonicalSkill);
+        } else if (candidate.provider === "github") {
+          normalized = normalizeGitHubCandidate(
+            candidate.rawProvider as any,
+            candidate.matchedSkills,
+            candidate.confirmedSkills ?? [],
+          );
+        } else {
+          normalized = normalizeWebCandidate(candidate as any);
+        }
+        const { candidateId } = await upsertCandidate(normalized);
+        candidate.candidateId = candidateId;
+      }
+
+      const candidateIds = result.candidates
+        .map((c) => c.candidateId)
+        .filter((id): id is string => Boolean(id));
+
+      const { freshCandidateIds, excludedCandidateIds } = await filterByFreshness(
+        candidateIds,
+        searchContextHash,
+        Boolean(freshSearch),
+      );
+      const freshSet = new Set(freshCandidateIds);
+
+      // Keep any candidate that either wasn't persisted (persistence failed for
+      // just that one row — fail open per-candidate too) or is in the fresh set.
+      result = {
+        ...result,
+        candidates: result.candidates.filter((c) => !c.candidateId || freshSet.has(c.candidateId)),
+      };
+      suppressedByFreshness = excludedCandidateIds.length;
+
+      await recordSearchHistory(freshCandidateIds, searchContextHash, finalJobTitle);
+    } catch (dbError) {
+      console.error(
+        "Candidate persistence/freshness step failed — returning un-persisted results:",
+        dbError instanceof Error ? dbError.message : dbError,
+      );
+    }
+    return NextResponse.json({
+      candidates: result.candidates,
+      totalFound: result.totalFound,
+      searchedAt: new Date().toISOString(),
+      provider,
+      creditsUsed: result.creditsUsed,
+      warning: result.warning,
+      extractedJD, suppressedByFreshness,
+    } as CandidateSearchResponse);
 
 
   } catch (err: unknown) {

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Search History & 30-Day Freshness Rule (Phase 5)
+// HireAgent — Search History & 30-Day Freshness Rule
 //
 // Scoped PER SEARCH CONTEXT (job title + full skill list), not globally —
 // a candidate excluded from a "React Developer" search today can still

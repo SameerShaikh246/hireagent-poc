@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Candidate Deduplication & Persistence (Phase 4)
+// HireAgent — Candidate Deduplication & Persistence
 //
 // Takes a NormalizedCandidate (from lib/normalizer/normalizeCandidate.ts)
 // and either merges it into an existing Candidate row or creates a new one.
@@ -116,7 +116,7 @@ export async function upsertCandidate(normalized: NormalizedCandidate): Promise<
     }
 
     // Always record the raw payload for this provider hit — full audit trail,
-    // and lets Phase 6 re-process without re-calling the provider API.
+    // and lets re-process without re-calling the provider API.
     await db.candidateProvider.create({
         data: {
             candidateId,

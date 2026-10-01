@@ -1,15 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Candidate Normalizer (Phase 3)
+// HireAgent — Candidate Normalizer
 //
 // Job: take each provider's raw shape (already validated against live data
 // — see validate-providers.mjs output) and map it into ONE consistent
-// NormalizedCandidate structure. This is what Phase 4 (dedup) and the DB
+// NormalizedCandidate structure. This is what dedup and the DB
 // persistence layer will consume — neither of those need to know that PDL
 // calls it `full_name` and GitHub calls it `name`.
 //
 // This file does NOT touch the database — it's a pure mapping layer.
 // Persisting a NormalizedCandidate (look up existing identities, merge or
-// create, upsert skills/certifications) is Phase 4.
+// create, upsert skills/certifications).
 //
 // IMPORTANT — enum types below are string literals that mirror the Prisma
 // enums in schema.prisma EXACTLY. Once you've run `npx prisma generate`,
@@ -34,7 +34,7 @@ export type SkillSource = "PDL_STRUCTURED" | "GITHUB_LANGUAGE" | "BIO_EXTRACTED"
 export type CertificationSource = "PDL" | "WEB_EXTRACTED";
 export type OpenToWorkStatus = "YES" | "NO" | "UNKNOWN";
 
-// Priority order for Phase 4 dedup lookups — check identities in this order
+// Priority order for dedup lookups — check identities in this order
 // and merge into the first Candidate found; only create a new Candidate if
 // NONE of these match anything in CandidateIdentity.
 export const IDENTITY_PRIORITY: IdentityType[] = [
@@ -75,7 +75,7 @@ export interface NormalizedCandidate {
   experienceYears?: number;
   educationLevel?: string;
 
-  // Phase 6 fields — always present on the shape, but null/UNKNOWN unless
+  // Fields — always present on the shape, but null/UNKNOWN unless
   // a provider actually supports them (see per-function notes below).
   estimatedSalaryMin?: number;
   estimatedSalaryMax?: number;
@@ -133,7 +133,7 @@ function detectOpenToWorkFromText(text: string): { status: OpenToWorkStatus; evi
 // MVP heuristic: looks for a LinkedIn-style "## Certifications" /
 // "## Licenses & Certifications" section (this is the format Tavily/Exa
 // raw_content came back in during validation) and pulls each line as a
-// candidate certification name. This is intentionally rough — Phase 6 will
+// candidate certification name. This is intentionally rough, will
 // hand this section to Groq for structured, validated extraction (name vs.
 // issuer vs. date) instead of a flat line dump. Confidence is set low (0.4)
 // to reflect that.
@@ -369,7 +369,7 @@ export function normalizeWebCandidate(candidate: WebCandidateForNormalize): Norm
   }
 
   // Always add a name+company fallback too, even when a stronger identity
-  // exists — cheap safety net for Phase 4 dedup, and harmless since Phase 4
+  // exists — cheap safety net for dedup, and harmless since
   // checks identities in priority order rather than requiring a single one.
   if (candidate.name && candidate.name !== "Unknown Candidate") {
     identities.push({

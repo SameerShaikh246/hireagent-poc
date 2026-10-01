@@ -97,7 +97,7 @@ const REC_LABEL: Record<string, string> = {
   success: "Strong Match",
   info: "Good Match",
   warning: "Partial",
-  danger: "Low Match", 
+  danger: "Low Match",
 };
 
 export function recLabel(score: number) {

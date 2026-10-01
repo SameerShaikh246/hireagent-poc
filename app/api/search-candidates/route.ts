@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { normalizePDLCandidate, normalizeGitHubCandidate, normalizeWebCandidate } from "@/lib/normalizer/normalizeCandidate";
 import { upsertCandidate } from "@/lib/dedup/upsertCandidate";
 import { buildSearchContextHash, filterByFreshness, recordSearchHistory } from "@/lib/searchHistory/freshness";
+import { db } from "@/lib/db";
+import { convertUsdToInr } from "@/lib/utils/currency";
+import { applyCandidateFilters, type CandidateFilters } from "@/lib/filters/applyCandidateFilters";
 
 // ─── Shared types ──────────────────────────────────────────────────────────────
 export interface WebCandidate {
@@ -21,33 +24,58 @@ export interface WebCandidate {
   location?: string;
   experienceYears?: number;         // PDL-derived
   education?: string;               // highest degree
-  provider: "pdl" | "tavily" | "exa" | "serper" | "github";
-  // Added for DB persistence / dedup (Phase 3–5):
+  provider: "pdl" | "tavily" | "exa" | "serper" | "github" | "db";
+
+  // Added for DB persistence / dedup:
   rawProvider?: unknown;       // raw PDL record / GitHub profile — feeds the normalizer
   confirmedSkills?: string[];  // GitHub only: matchedSkills confirmed via a language: query
   candidateId?: string;        // set after upsertCandidate() — the DB row this maps to
 
+  // candidate information enhancements. Populated from the
+  // persisted Candidate row (post-merge), not just this one provider hit —
+  // see the enrichment block in POST(). Absent/empty = "Not Available" in
+  // the UI, not an error.
+  certifications?: {
+    name: string;
+    issuer?: string;
+    source: "PDL" | "WEB_EXTRACTED";
+    confidence?: number;
+  }[];
+  estimatedSalary?: {
+    min?: number;
+    max?: number;
+    currency?: string;
+    minINR?: number;
+    maxINR?: number;
+    source?: string;   // e.g. "PDL inferred_salary" — surface this in the UI so recruiters know it's an estimate
+  } | null;
+  openToWork?: {
+    status: "YES" | "NO" | "UNKNOWN";
+    evidence?: string;
+    source?: string;   // e.g. "github_hireable_field", "bio_phrase_match:tavily"
+  };
 }
 
 export interface CandidateSearchResponse {
   candidates: WebCandidate[];
   totalFound: number;
   searchedAt: string;
-  provider: "pdl" | "tavily" | "exa" | "serper" | "github";
+  provider: "pdl" | "tavily" | "exa" | "serper" | "github" | "db";
   creditsUsed?: number;
   warning?: string;
 
-  extractedJD: {
+  extractedJD?: {
     jobTitle: string;
     mandatorySkills: string[];
     mustHaveSkills: string[];
     niceToHaveSkills: string[];
   };
-  suppressedByFreshness?: number;
+  suppressedByFreshness?: number; // count of candidates hidden by the 30-day freshness rule
+  filteredOutByFilters?: number;  // count of candidates removed by recruiter-selected filters
 }
 
 
-type Provider = "pdl" | "tavily" | "exa" | "serper" | "github";
+type Provider = "pdl" | "tavily" | "exa" | "serper" | "github" | "db";
 type RawResult = { title: string; url: string; snippet: string };
 type JDMode = "structured" | "freetext";
 
@@ -117,6 +145,11 @@ function matchSkillsInText(text: string, skills: string[]): string[] {
 }
 
 // ─── Hard allow-list sanitizer ─────────────────────────────────────────────────
+// CRITICAL: this is the single source of truth that prevents any skill outside
+// the JD's actual skill list from ever appearing in matchedSkills, regardless
+// of what an LLM (Groq) or any heuristic returns. Every code path that sets
+// matchedSkills — GitHub matching, web-search matching, Groq enrichment — must
+// run its output through this before it's used or merged.
 function sanitizeToAllowedSkills(skills: string[], allSkills: string[]): string[] {
   const allowedCanonical = new Set(allSkills.map(canonicalSkill));
   return [...new Set(
@@ -695,17 +728,10 @@ async function searchPDL(
     throw new Error(`PDL API error ${res.status}: ${text.slice(0, 300)}`);
   }
 
-
-
   const data = await res.json();
   const records: PDLPersonRecord[] = data.data ?? [];
   const totalFound: number = data.total ?? records.length;
-  const allSkills = getAllJDSkills(
-    mandatorySkills,
-    mustHaveSkills,
-    niceToHaveSkills,
-  );
-
+  const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   const candidates: WebCandidate[] = records.map((r, i) => {
     const pdlSkills = (r.skills ?? []).map((s) => s.toLowerCase());
@@ -863,7 +889,7 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
     headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
       q: query,
-      num: 10,
+      num: 20,
       gl: "in",
       hl: "en",
       location: "India"
@@ -877,6 +903,12 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
 }
 
 const DEFAULT_LOCATION = "India";
+// How many candidates actually get shown/recorded-as-seen per search, once
+// the wider provider pools have been through freshness + recruiter filters.
+// Raising provider pool sizes without this would just show more people per
+// search instead of fixing "same 10 every time" — this is what keeps the
+// user-facing result count stable while giving freshness room to work.
+const DISPLAY_LIMIT = 10;
 
 async function runWebSearch(
   provider: "tavily" | "exa" | "serper",
@@ -889,12 +921,7 @@ async function runWebSearch(
   groqApiKey?: string,
 ): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
   const skills = [...new Set([...mandatorySkills, ...mustHaveSkills])].slice(0, 4).join(" ");
-  const allSkills = getAllJDSkills(
-    mandatorySkills,
-    mustHaveSkills,
-    niceToHaveSkills,
-  );
-
+  const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   const queries = [
     `site:linkedin.com/in "${jobTitle}" ${skills} "${location}"`,
@@ -925,7 +952,9 @@ async function runWebSearch(
     .filter((r) => isUsefulWebResult(r.url, r.title, r.snippet))
     .map((r, i) => webResultToCandidate(r, i, allSkills, provider))
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 10);
+    .slice(0, 25);
+  // NOTE: was slice(0, 10) — widened so POST()'s freshness check has a real
+  // fallback pool instead of nothing once the top 10 get suppressed.
 
   if (groqApiKey?.trim()) {
     candidates = await enrichWebCandidatesWithGroq(
@@ -966,12 +995,7 @@ async function planGitHubQuery(
   niceToHaveSkills: string[],
   groqApiKey: string,
 ): Promise<GitHubQueryPlan> {
-  const allSkills = getAllJDSkills(
-    mandatorySkills,
-    mustHaveSkills,
-    niceToHaveSkills,
-  );
-
+  const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   const prompt = `You are building GitHub user-search queries for a recruiter.
 
@@ -1066,6 +1090,7 @@ interface GitHubUserProfile {
   public_repos: number;
   followers: number;
   html_url: string;
+  hireable?: boolean | null;
 }
 
 async function fetchGitHubJSON(
@@ -1149,12 +1174,7 @@ async function searchGitHubAPI(
   totalFound: number;
   warning?: string;
 }> {
-  const allSkills = getAllJDSkills(
-    mandatorySkills,
-    mustHaveSkills,
-    niceToHaveSkills,
-  );
-
+  const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   if (!groqApiKey?.trim()) {
     throw new Error("A Groq API key is required for GitHub search — it's used to translate the JD into an effective query and to clean up results.");
@@ -1190,7 +1210,7 @@ async function searchGitHubAPI(
   const settled = await Promise.allSettled(
     variants.map((v) =>
       fetchGitHubJSON(
-        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=10&sort=repositories&order=desc`,
+        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=25&sort=repositories&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1201,7 +1221,6 @@ async function searchGitHubAPI(
       })),
     ),
   );
-
 
   const anySuccessWithItems = settled.some(
     (r) => r.status === "fulfilled" && (r.value.data.items?.length ?? 0) > 0,
@@ -1217,7 +1236,7 @@ async function searchGitHubAPI(
       fetchGitHubJSON(
         `https://api.github.com/search/users?q=${encodeURIComponent(
           fallbackQ
-        )}&per_page=10&sort=followers&order=desc`,
+        )}&per_page=25&sort=followers&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1227,7 +1246,6 @@ async function searchGitHubAPI(
         rateLimitReset: result.rateLimitReset,
       })),
     ]);
-
   }
   const allSettled = [...settled, ...fallbackSettled];
 
@@ -1273,7 +1291,7 @@ async function searchGitHubAPI(
   }
 
   const profileSettled = await Promise.allSettled(
-    items.slice(0, 20).map((item) =>
+    items.slice(0, 25).map((item) =>
       fetchGitHubJSON(
         `https://api.github.com/users/${item.login}`,
         headers,
@@ -1283,7 +1301,7 @@ async function searchGitHubAPI(
 
   let candidates: WebCandidate[] = profileSettled
     .filter((p) => p.status === "fulfilled")
-    .map((p) => p.value.data)
+    .map((p) => (p as PromiseFulfilledResult<{ data: GitHubUserProfile }>).value.data)
     .map((p) => {
 
       const confirmed = [...(loginToConfirmedSkills.get(p.login) ?? [])];
@@ -1322,8 +1340,11 @@ async function searchGitHubAPI(
         provider: "github" as const,
       };
     })
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 10);
+    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+  // NOTE: no slice(0, N) here on purpose — POST() keeps this full scored
+  // pool through the freshness check, and only slices down to the display
+  // limit afterward. Slicing here would mean a repeat search has nothing
+  // left to fall back on once the top 10 get suppressed as "already seen".
 
   if (groqApiKey?.trim()) {
     candidates = await enrichWebCandidatesWithGroq(candidates, allSkills, groqApiKey.trim());
@@ -1335,6 +1356,112 @@ async function searchGitHubAPI(
     warning: githubWarning,
   };
 
+}
+
+// ─── Internal DB search ──────────────────────────────────────────────
+// The candidate DB behaves like just another provider: same skill matching,
+// same scoring shape (reuses the PDL weighting — mandatory/must/nice/title/
+// experience), same response shape. No API key, no Groq call needed — the
+// data was already normalized and cleaned up when it was first persisted.
+async function searchInternalDB(
+  jobTitle: string,
+  mandatorySkills: string[],
+  mustHaveSkills: string[],
+  niceToHaveSkills: string[],
+): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
+  const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
+  const canonMandatory = mandatorySkills.map(canonicalSkill);
+  const canonMust = mustHaveSkills.map(canonicalSkill);
+  const canonNice = niceToHaveSkills.map(canonicalSkill);
+
+  // Broad net at the DB level (any matching skill, or everyone if no skills
+  // given) — precise tiered scoring happens in JS below, same as every
+  // other provider's scoring function in this file.
+  const rows = await db.candidate.findMany({
+    where: allSkills.length > 0 ? { skills: { some: { skill: { in: allSkills } } } } : undefined,
+    include: { skills: true, certifications: true, identities: true },
+    take: 200,
+    orderBy: { lastSeenAt: "desc" },
+  });
+
+  const reqTitle = normalize(jobTitle);
+  const titleWords = reqTitle.split(" ").filter((w) => w.length > 2);
+
+  const scored: WebCandidate[] = rows.map((c) => {
+    const candidateSkillSet = new Set(c.skills.map((s) => s.skill));
+    const matchedSkills = allSkills.filter((s) => candidateSkillSet.has(s));
+    const missingSkills = allSkills.filter((s) => !candidateSkillSet.has(s));
+
+    const matchMandatory = canonMandatory.filter((s) => candidateSkillSet.has(s));
+    const matchMust = canonMust.filter((s) => candidateSkillSet.has(s));
+    const matchNice = canonNice.filter((s) => candidateSkillSet.has(s));
+
+    const mandRatio = canonMandatory.length > 0 ? matchMandatory.length / canonMandatory.length : 1;
+    const mustRatio = canonMust.length > 0 ? matchMust.length / canonMust.length : 0.5;
+    const niceRatio = canonNice.length > 0 ? matchNice.length / canonNice.length : 1;
+
+    const candTitle = normalize(c.currentTitle ?? "");
+    const titleMatch = titleWords.length > 0
+      ? titleWords.filter((w) => candTitle.includes(w)).length / titleWords.length
+      : 0.5;
+
+    const score = Math.min(99, Math.round(
+      mandRatio * 40 + mustRatio * 25 + niceRatio * 10 + titleMatch * 15 +
+      (c.experienceYears ? Math.min(10, c.experienceYears / 2) : 5),
+    ));
+
+    const linkedinIdentity = c.identities.find((i) => i.type === "LINKEDIN_URL");
+    const githubIdentity = c.identities.find((i) => i.type === "GITHUB_URL");
+    const portfolioIdentity = c.identities.find((i) => i.type === "PORTFOLIO_URL");
+    const bestIdentity = linkedinIdentity ?? githubIdentity ?? portfolioIdentity;
+    const url = bestIdentity ? `https://${bestIdentity.value}` : "";
+    const currency = c.estimatedSalaryCurrency ?? "USD";
+
+    return {
+      id: `db-${c.id}`,
+      name: c.fullName,
+      title: c.currentTitle ?? "Professional",
+      company: c.currentCompany ?? "",
+      url,
+      source: linkedinIdentity ? "linkedin" : githubIdentity ? "github" : portfolioIdentity ? "portfolio" : "other",
+      snippet: c.summary ?? "",
+      matchedSkills,
+      missingSkills,
+      relevanceScore: score,
+      location: c.location ?? undefined,
+      experienceYears: c.experienceYears ?? undefined,
+      education: c.educationLevel ?? undefined,
+      candidateId: c.id, // already a DB row — skip re-normalize/upsert (see POST handler)
+      certifications: c.certifications.map((cert) => ({
+        name: cert.name,
+        issuer: cert.issuer ?? undefined,
+        source: cert.source,
+        confidence: cert.confidence ?? undefined,
+      })),
+      estimatedSalary: (c.estimatedSalaryMin != null || c.estimatedSalaryMax != null)
+        ? {
+          min: c.estimatedSalaryMin ?? undefined,
+          max: c.estimatedSalaryMax ?? undefined,
+          currency,
+          minINR: currency === "USD" && c.estimatedSalaryMin != null ? convertUsdToInr(c.estimatedSalaryMin) : undefined,
+          maxINR: currency === "USD" && c.estimatedSalaryMax != null ? convertUsdToInr(c.estimatedSalaryMax) : undefined,
+          source: c.salarySource ?? undefined,
+        }
+        : null,
+      openToWork: {
+        status: c.openToWork,
+        evidence: c.openToWorkEvidence ?? undefined,
+        source: c.openToWorkSource ?? undefined,
+      },
+      provider: "db",
+    };
+  });
+
+  const sorted = scored.sort((a, b) => b.relevanceScore - a.relevanceScore);
+  // No slice here — same reasoning as GitHub/web-search above. The `take: 200`
+  // on the query above is the real cap; POST() slices to the display limit
+  // after freshness filtering.
+  return { candidates: sorted, totalFound: rows.length };
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
@@ -1352,6 +1479,7 @@ export async function POST(req: NextRequest) {
       jdText = "",
       groqApiKey = "",
       freshSearch = false,
+      filters,
     }: {
       provider: Provider;
       apiKey: string;
@@ -1363,27 +1491,31 @@ export async function POST(req: NextRequest) {
       jdText?: string;
       groqApiKey?: string;
       freshSearch?: boolean;
+      filters?: CandidateFilters;
     } = body;
 
-    if (!["pdl", "tavily", "exa", "serper", "github"].includes(provider))
+    if (!["pdl", "tavily", "exa", "serper", "github", "db"].includes(provider))
       return NextResponse.json({ error: "Invalid provider." }, { status: 400 });
 
-    if (provider !== "github" && (!apiKey || apiKey.trim().length < 5))
+    // GitHub works unauthenticated; the internal DB needs no external key at all.
+    if (!["github", "db"].includes(provider) && (!apiKey || apiKey.trim().length < 5))
       return NextResponse.json({ error: "API key is required." }, { status: 400 });
 
-    if (provider !== "pdl" && (!groqApiKey || groqApiKey.trim().length < 10)) {
+    // PDL returns structured data directly, and the internal DB was already
+    // cleaned up by Groq when each candidate was first persisted — neither
+    // needs a fresh Groq call here.
+    if (!["pdl", "db"].includes(provider) && (!groqApiKey || groqApiKey.trim().length < 10)) {
       return NextResponse.json(
         { error: "A Groq API key is required for tavily/exa/serper/github so a good search query can be built and results can be cleaned up and validated. PDL doesn't need it since it returns structured data directly." },
         { status: 400 },
       );
     }
 
-    // Values actually used for the search — identical to the structured path
-    // unless jdMode === "freetext", in which case they get filled in below.
     let finalJobTitle = jobTitle;
     let finalMandatorySkills = mandatorySkills;
     let finalMustHaveSkills = mustHaveSkills;
     let finalNiceToHaveSkills = niceToHaveSkills;
+    let extractedJD: CandidateSearchResponse["extractedJD"];
 
     if (jdMode === "freetext") {
       if (!jdText || jdText.trim().length < 20)
@@ -1403,6 +1535,13 @@ export async function POST(req: NextRequest) {
       finalMandatorySkills = extracted.mandatorySkills.length > 0 ? extracted.mandatorySkills : finalMandatorySkills;
       finalMustHaveSkills = extracted.mustHaveSkills.length > 0 ? extracted.mustHaveSkills : finalMustHaveSkills;
       finalNiceToHaveSkills = extracted.niceToHaveSkills.length > 0 ? extracted.niceToHaveSkills : finalNiceToHaveSkills;
+
+      extractedJD = {
+        jobTitle: finalJobTitle,
+        mandatorySkills: finalMandatorySkills,
+        mustHaveSkills: finalMustHaveSkills,
+        niceToHaveSkills: finalNiceToHaveSkills,
+      };
     }
 
     if (!finalJobTitle.trim() && finalMustHaveSkills.length === 0 && finalMandatorySkills.length === 0)
@@ -1415,17 +1554,6 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
 
-    // Always populated — for BOTH structured and freetext modes — since this
-    // is the exact skill set every provider searched with. The frontend reads
-    // effectiveSkills from this field instead of recomputing it from JDContext,
-    // so structured and freetext results render identically correctly.
-    const extractedJD: CandidateSearchResponse["extractedJD"] = {
-      jobTitle: finalJobTitle,
-      mandatorySkills: finalMandatorySkills,
-      mustHaveSkills: finalMustHaveSkills,
-      niceToHaveSkills: finalNiceToHaveSkills,
-    };
-
     let result: {
       candidates: WebCandidate[];
       totalFound: number;
@@ -1433,9 +1561,10 @@ export async function POST(req: NextRequest) {
       warning?: string;
     };
 
-
     if (provider === "pdl") {
       result = await searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills, apiKey.trim());
+    } else if (provider === "db") {
+      result = await searchInternalDB(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
     } else if (provider === "github") {
       result = await searchGitHubAPI(
         finalJobTitle,
@@ -1458,20 +1587,27 @@ export async function POST(req: NextRequest) {
         groqApiKey.trim(),
       );
     }
-    // ─── Phase 3–5: normalize, dedupe/persist, apply 30-day freshness ─────────
-    // Fails OPEN by design: if the DB is unreachable, unconfigured, or anything
-    // here throws, the search still returns its normal results untouched.
-    // Persistence is additive — it must never be a hard dependency for the
+
+    // ─── Normalize, dedupe/persist, apply 30-day freshness ─────────
+    // Fails OPEN by design: if the DB is unreachable, unconfigured, or
+    // anything here throws, the search still returns its normal results
+    // untouched. Persistence is additive — never a hard dependency for the
     // recruiter-facing search feature to keep working.
     let suppressedByFreshness = 0;
+    let filteredOutByFilters = 0;
+    let filtersApplied = false;
     try {
       const allSkills = getAllJDSkills(finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
       const searchContextHash = buildSearchContextHash(finalJobTitle, allSkills);
 
       // Sequential (not Promise.all) — avoids a race where the same person
-      // appearing twice in one result set (rare, but possible across
-      // providers) could create two Candidate rows instead of merging into one.
+      // appearing twice in one result set could create two Candidate rows
+      // instead of merging into one.
       for (const candidate of result.candidates) {
+        // Already a DB row (internal DB search) — it IS the
+        // persisted source of truth already, nothing to normalize or upsert.
+        if (candidate.provider === "db") continue;
+
         let normalized;
         if (candidate.provider === "pdl") {
           normalized = normalizePDLCandidate(candidate.rawProvider as any, canonicalSkill);
@@ -1492,6 +1628,52 @@ export async function POST(req: NextRequest) {
         .map((c) => c.candidateId)
         .filter((id): id is string => Boolean(id));
 
+      // ─── Attach certifications / salary / open-to-work ─────────
+      // Pulled from the PERSISTED Candidate row, not just this provider's
+      // own normalized result — the DB row reflects the merge across every
+      // provider that has ever found this person (e.g. a GitHub `hireable`
+      // signal should still show up even on a search that found them via
+      // Tavily this time). One batched query, not N+1.
+      if (candidateIds.length > 0) {
+        const persisted = await db.candidate.findMany({
+          where: { id: { in: candidateIds } },
+          include: { certifications: true },
+        });
+        const persistedById = new Map(persisted.map((c) => [c.id, c]));
+
+        for (const candidate of result.candidates) {
+          if (!candidate.candidateId) continue;
+          const row = persistedById.get(candidate.candidateId);
+          if (!row) continue;
+
+          candidate.certifications = row.certifications.map((c) => ({
+            name: c.name,
+            issuer: c.issuer ?? undefined,
+            source: c.source,
+            confidence: c.confidence ?? undefined,
+          }));
+
+          const hasSalary = row.estimatedSalaryMin != null || row.estimatedSalaryMax != null;
+          const currency = row.estimatedSalaryCurrency ?? "USD";
+          candidate.estimatedSalary = hasSalary
+            ? {
+              min: row.estimatedSalaryMin ?? undefined,
+              max: row.estimatedSalaryMax ?? undefined,
+              currency,
+              minINR: currency === "USD" && row.estimatedSalaryMin != null ? convertUsdToInr(row.estimatedSalaryMin) : undefined,
+              maxINR: currency === "USD" && row.estimatedSalaryMax != null ? convertUsdToInr(row.estimatedSalaryMax) : undefined,
+              source: row.salarySource ?? undefined,
+            }
+            : null;
+
+          candidate.openToWork = {
+            status: row.openToWork,
+            evidence: row.openToWorkEvidence ?? undefined,
+            source: row.openToWorkSource ?? undefined,
+          };
+        }
+      }
+
       const { freshCandidateIds, excludedCandidateIds } = await filterByFreshness(
         candidateIds,
         searchContextHash,
@@ -1499,21 +1681,60 @@ export async function POST(req: NextRequest) {
       );
       const freshSet = new Set(freshCandidateIds);
 
-      // Keep any candidate that either wasn't persisted (persistence failed for
-      // just that one row — fail open per-candidate too) or is in the fresh set.
       result = {
         ...result,
         candidates: result.candidates.filter((c) => !c.candidateId || freshSet.has(c.candidateId)),
       };
       suppressedByFreshness = excludedCandidateIds.length;
 
-      await recordSearchHistory(freshCandidateIds, searchContextHash, finalJobTitle);
+      // ─── Recruiter-selected filters ─────────────────────────────
+      // Applied AFTER persistence (so everyone found still gets stored) and
+      // AFTER freshness, but BEFORE recording history — a candidate hidden by
+      // a filter was never actually shown, so it shouldn't count as "seen"
+      // and get suppressed for 30 days on the next search.
+      const filtered = applyCandidateFilters(result.candidates, filters, canonicalSkill);
+      result = { ...result, candidates: filtered.candidates };
+      filteredOutByFilters = filtered.removed;
+      filtersApplied = true;
+
+      // ─── Final display slice ─────────────────────────────────────────────
+      // Everything above ran against the FULL widened pool (up to 25 for
+      // GitHub/Tavily/Exa/Serper, 200 for the DB). Only now — after freshness
+      // and filters have both had the whole pool to work with — do we cut
+      // down to what the recruiter actually sees. This is what lets a repeat
+      // search surface different people instead of just suppressing the same
+      // top 10 down to zero.
+      result = {
+        ...result,
+        candidates: [...result.candidates]
+          .sort((a, b) => b.relevanceScore - a.relevanceScore)
+          .slice(0, DISPLAY_LIMIT),
+      };
+
+      const shownIds = result.candidates
+        .map((c) => c.candidateId)
+        .filter((id): id is string => Boolean(id));
+      await recordSearchHistory(shownIds, searchContextHash, finalJobTitle);
     } catch (dbError) {
       console.error(
         "Candidate persistence/freshness step failed — returning un-persisted results:",
         dbError instanceof Error ? dbError.message : dbError,
       );
     }
+
+    // Fail-open path: if the DB step threw before filters ran, still honor
+    // the recruiter's filters (they're pure and don't need the DB).
+    if (!filtersApplied) {
+      const filtered = applyCandidateFilters(result.candidates, filters, canonicalSkill);
+      result = {
+        ...result,
+        candidates: [...filtered.candidates]
+          .sort((a, b) => b.relevanceScore - a.relevanceScore)
+          .slice(0, DISPLAY_LIMIT),
+      };
+      filteredOutByFilters = filtered.removed;
+    }
+
     return NextResponse.json({
       candidates: result.candidates,
       totalFound: result.totalFound,
@@ -1521,7 +1742,9 @@ export async function POST(req: NextRequest) {
       provider,
       creditsUsed: result.creditsUsed,
       warning: result.warning,
-      extractedJD, suppressedByFreshness,
+      extractedJD,
+      suppressedByFreshness,
+      filteredOutByFilters,
     } as CandidateSearchResponse);
 
 

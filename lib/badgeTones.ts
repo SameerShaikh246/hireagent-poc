@@ -1,8 +1,3 @@
-// Maps a semantic "tone" to theme tokens that already flip correctly between
-// light/dark (see globals.css --success/--success-light etc from phase 1).
-// Using color-mix for the border keeps it soft in both themes without
-// needing a dedicated --X-border token per tone.
-
 export type Tone = "success" | "info" | "warning" | "danger" | "accent" | "neutral";
 
 export interface ToneStyle {

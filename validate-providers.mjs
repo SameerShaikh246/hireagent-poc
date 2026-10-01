@@ -1,25 +1,4 @@
-/**
- * HireAgent — Provider Field Validation Script (Phase 1)
- * ---------------------------------------------------------
- * Run this LOCALLY (not in the app) with your 5 trial keys to confirm
- * exactly what fields PDL / Tavily / Exa / Serper actually return, so we
- * can build the Prisma schema and normalizer against real data instead
- * of guessing from docs.
- *
- * Usage:
- *   PDL_API_KEY=xxx TAVILY_API_KEY=xxx EXA_API_KEY=xxx SERPER_API_KEY=xxx \
- *   GITHUB_TOKEN=xxx node validate-providers.mjs
- *
- * (GITHUB_TOKEN is optional — raises the rate limit, doesn't require it)
- *
- * Requires Node 18+ (built-in fetch). No npm install needed.
- *
- * IMPORTANT: This only prints field NAMES and value TYPES/samples to the
- * console — it does not write anything to disk or send data anywhere.
- * Review the output before pasting it back for review; redact anything
- * that looks like a real person's PII you don't want shared (name/email/
- * phone are usually fine to redact — we mainly need field *shapes*).
- */
+
 import "dotenv/config";
 import dotenv from "dotenv";
 

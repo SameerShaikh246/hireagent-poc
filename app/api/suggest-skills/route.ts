@@ -90,19 +90,19 @@ Rules:
     const norm = (arr: unknown[]): SkillSuggestion[] =>
       Array.isArray(arr)
         ? arr
-            .filter(
-              (s): s is Record<string, string> => !!s && typeof s === "object",
-            )
-            .map((s) => ({
-              skill: String(s.skill ?? "")
-                .toLowerCase()
-                .trim(),
-              confidence: (["high", "medium"].includes(s.confidence)
-                ? s.confidence
-                : "medium") as "high" | "medium",
-              reason: String(s.reason ?? ""),
-            }))
-            .filter((s) => s.skill.length > 0)
+          .filter(
+            (s): s is Record<string, string> => !!s && typeof s === "object",
+          )
+          .map((s) => ({
+            skill: String(s.skill ?? "")
+              .toLowerCase()
+              .trim(),
+            confidence: (["high", "medium"].includes(s.confidence)
+              ? s.confidence
+              : "medium") as "high" | "medium",
+            reason: String(s.reason ?? ""),
+          }))
+          .filter((s) => s.skill.length > 0)
         : [];
 
     return {

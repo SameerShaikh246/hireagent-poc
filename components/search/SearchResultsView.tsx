@@ -1,16 +1,18 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Globe, CheckCircle, BarChart3, Database, AlertTriangle, RotateCcw } from "lucide-react";
+import { Globe, CheckCircle, BarChart3, Database, History, AlertTriangle, RotateCcw, RefreshCw } from "lucide-react";
 import { useWebSearch } from "@/context/WebSearchContext";
 import { useJD } from "@/context/JDContext";
 import { PROVIDERS } from "@/lib/searchProviders";
-import type { WebCandidate } from "@/lib/webSearchTypes";
+import { buildJDText } from "@/components/JobDescriptionForm";
+import type { WebCandidate, CandidateFilters } from "@/lib/webSearchTypes";
 import WebCandidateCard from "./WebCandidateCard";
+import CandidateFiltersPanel from "./CandidateFiltersPanel";
 
 export default function SearchResultsView() {
     const router = useRouter();
-    const { jdMode } = useJD();
+    const { jdMode, structuredJD, freeTextJD } = useJD();
     const {
         provider,
         results,
@@ -19,6 +21,11 @@ export default function SearchResultsView() {
         creditsUsed,
         extractedJD,
         warning,
+        suppressedByFreshness,
+        filteredOutByFilters,
+        lastFilters,
+        loading,
+        runSearch,
         reset,
     } = useWebSearch();
 
@@ -27,11 +34,19 @@ export default function SearchResultsView() {
 
     const meta = PROVIDERS[provider];
     const isFreeText = jdMode === "freetext";
+    const jdText = isFreeText ? freeTextJD : buildJDText(structuredJD);
 
-
+    // extractedJD is ONLY populated by the backend in free-text JD mode (it's
+    // what Groq extracted from the pasted text). In structured mode it's
+    // always null — the skills were already known, nothing to extract. Using
+    // extractedJD alone here meant structured-mode searches always got an
+    // empty effectiveSkills array: a 0 max on the "Skills matched" bar (so it
+    // never filled, regardless of how many skills actually matched), and no
+    // skill chips in the filter panel at all. Falling back to structuredJD's
+    // own lists fixes both.
     const effectiveSkills = extractedJD
         ? [...new Set([...extractedJD.mandatorySkills, ...extractedJD.mustHaveSkills, ...extractedJD.niceToHaveSkills])]
-        : [];
+        : [...new Set([...structuredJD.mandatorySkills, ...structuredJD.mustHaveSkills, ...structuredJD.niceToHaveSkills])];
 
     const list = results ?? [];
     const filtered = list.filter((c) => filterSource === "all" || c.source === filterSource);
@@ -53,20 +68,54 @@ export default function SearchResultsView() {
         router.push("/search");
     };
 
+    // Re-runs the same search (same provider, same JD) with a new set of
+    // Phase 8 filters. Server-side, so it hits the DB/provider again rather
+    // than filtering the already-fetched list client-side.
+    //
+    // freshSearch MUST be true here. The freshness hash is built from
+    // jobTitle + skills only — filters don't factor into it — so refining
+    // filters on a search you just ran is, from the backend's point of
+    // view, an identical search context to the one a few seconds ago. With
+    // freshSearch: false, every candidate you just saw gets suppressed as
+    // "already seen" before your filters ever run on anything, and you get
+    // zero results regardless of how loose the filters are.
+    const applyFilters = async (filters: CandidateFilters | undefined) => {
+        await runSearch({ structuredJD, jdMode, jdText, filters, freshSearch: true });
+    };
+
+    // Phase 5 — bypass the 30-day "already seen" exclusion, keeping whatever
+    // filters are currently active.
+    const runFreshSearch = async () => {
+        await runSearch({ structuredJD, jdMode, jdText, filters: lastFilters, freshSearch: true });
+    };
+
     return (
         <div className="max-w-4xl mx-auto py-8 px-5">
             <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
                 <h1 className="font-display text-[22px] font-semibold text-(--text-primary)">
                     Search results
                 </h1>
-                <button
-                    onClick={startNewSearch}
-                    className="flex items-center gap-1.5 text-[12px] font-medium rounded-lg px-3 py-1.5 border cursor-pointer"
-                    style={{ borderColor: "var(--border)", color: "var(--accent)", background: "var(--surface)" }}
-                >
-                    <RotateCcw size={13} strokeWidth={2.25} />
-                    New search
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={runFreshSearch}
+                        disabled={loading}
+                        title="Bypass the 30-day 'already seen' rule and search again"
+                        className="flex items-center gap-1.5 text-[12px] font-medium rounded-lg px-3 py-1.5 border cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                        style={{ borderColor: "var(--border)", color: "var(--text-secondary)", background: "var(--surface)" }}
+                    >
+                        <RefreshCw size={13} strokeWidth={2.25} className={loading ? "animate-spin" : ""} />
+                        {loading ? "Searching…" : "Fresh search"}
+                    </button>
+                    <button
+                        onClick={startNewSearch}
+                        disabled={loading}
+                        className="flex items-center gap-1.5 text-[12px] font-medium rounded-lg px-3 py-1.5 border cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                        style={{ borderColor: "var(--border)", color: "var(--accent)", background: "var(--surface)" }}
+                    >
+                        <RotateCcw size={13} strokeWidth={2.25} />
+                        New search
+                    </button>
+                </div>
             </div>
 
             {warning && (
@@ -93,7 +142,7 @@ export default function SearchResultsView() {
                     {
                         label: creditsUsed !== undefined ? `${creditsUsed} credits used` : "Via",
                         value: meta.label,
-                        icon: provider === "pdl" ? Database : Globe,
+                        icon: provider === "pdl" ? Database : provider === "db" ? History : Globe,
                     },
                 ].map((stat) => (
                     <div
@@ -136,6 +185,46 @@ export default function SearchResultsView() {
                 </div>
             )}
 
+            {provider === "db" && (
+                <div
+                    className="flex items-center gap-2 px-4 py-2.5 mb-5 rounded-lg text-[12px]"
+                    style={{ background: "var(--surface-hover)", color: "var(--text-secondary)" }}
+                >
+                    <History size={14} strokeWidth={2} className="shrink-0" color="var(--text-secondary)" />
+                    Searching candidates already saved from previous searches — no API cost, no external calls.
+                </div>
+            )}
+
+            {/* Phase 5/8 — counts for what's NOT shown, so a shorter-than-expected
+               list doesn't look like a bug */}
+            {(suppressedByFreshness > 0 || filteredOutByFilters > 0) && (
+                <div className="flex items-center gap-3 flex-wrap text-[12px] text-(--text-muted) mb-4 px-1">
+                    {suppressedByFreshness > 0 && (
+                        <span>{suppressedByFreshness} hidden as already seen in the last 30 days</span>
+                    )}
+                    {filteredOutByFilters > 0 && (
+                        <span>{filteredOutByFilters} hidden by filters</span>
+                    )}
+                    {suppressedByFreshness > 0 && (
+                        <button
+                            onClick={runFreshSearch}
+                            disabled={loading}
+                            className="text-(--accent) underline bg-transparent border-none cursor-pointer p-0 disabled:opacity-60"
+                        >
+                            Show fresh results instead
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {/* Phase 8 — filter panel */}
+            <CandidateFiltersPanel
+                availableSkills={effectiveSkills}
+                initialFilters={lastFilters}
+                onApply={applyFilters}
+                loading={loading}
+            />
+
             {/* filter row */}
             <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
                 <span className="text-[12px] text-(--text-muted)">
@@ -173,7 +262,9 @@ export default function SearchResultsView() {
             {/* cards */}
             {filtered.length === 0 ? (
                 <div className="text-center py-12 text-(--text-muted) text-[14px]">
-                    No candidates for this filter.
+                    {list.length === 0 && (suppressedByFreshness > 0 || filteredOutByFilters > 0)
+                        ? "Nothing left to show — everything found was hidden by freshness or filters. Try \"Fresh search\" or loosening a filter."
+                        : "No candidates for this filter."}
                 </div>
             ) : (
                 <div className="flex flex-col gap-[10px]">
@@ -199,6 +290,8 @@ export default function SearchResultsView() {
                         </a>{" "}
                         · {creditsUsed ?? 0} of your free credits used
                     </>
+                ) : provider === "db" ? (
+                    <>Your saved candidate pool · always verify current availability before outreach</>
                 ) : (
                     <>
                         Web profiles via{" "}

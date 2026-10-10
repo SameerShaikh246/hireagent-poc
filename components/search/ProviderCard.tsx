@@ -1,5 +1,5 @@
 "use client";
-import { Database, Code2, Search, Brain, Globe, type LucideIcon } from "lucide-react";
+import { Database, Code2, Search, Brain, Globe, History, type LucideIcon } from "lucide-react";
 import type { Provider } from "@/lib/webSearchTypes";
 import { PROVIDERS, toneStyle } from "@/lib/searchProviders";
 
@@ -9,6 +9,7 @@ const ICONS: Record<string, LucideIcon> = {
     search: Search,
     brain: Brain,
     globe: Globe,
+    history: History,
 };
 
 export default function ProviderCard({

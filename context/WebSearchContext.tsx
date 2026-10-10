@@ -1,22 +1,20 @@
 "use client";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import type { StructuredJD, JDMode } from "@/types";
-import type { Provider, WebCandidate, ExtractedJD } from "@/lib/webSearchTypes";
+import type { Provider, WebCandidate, ExtractedJD, CandidateFilters } from "@/lib/webSearchTypes";
 
 interface RunSearchArgs {
     structuredJD: StructuredJD;
     jdMode: JDMode;
     jdText: string;
-    groqApiKey: string;
-    apiKey: string;
+    filters?: CandidateFilters;
+    freshSearch?: boolean;
 }
 
 
 interface WebSearchContextValue {
     provider: Provider;
     setProvider: (p: Provider) => void;
-    apiKey: string;
-    setApiKey: (v: string) => void;
     loading: boolean;
     error: string;
     results: WebCandidate[] | null;
@@ -25,6 +23,12 @@ interface WebSearchContextValue {
     creditsUsed?: number;
     extractedJD: ExtractedJD | null;
     warning: string;
+    /** Candidates hidden because they were already shown for this same JD within the last 30 days. */
+    suppressedByFreshness: number;
+    /** Candidates hidden by the currently-applied recruiter filters. */
+    filteredOutByFilters: number;
+    /** The filters used for the most recent search — lets the filter panel restore its own state, and lets "Fresh search" re-run with the same filters. */
+    lastFilters: CandidateFilters | undefined;
     runSearch: (args: RunSearchArgs) => Promise<boolean>;
     reset: () => void;
 }
@@ -33,7 +37,6 @@ const WebSearchContext = createContext<WebSearchContextValue | null>(null);
 
 export function WebSearchProvider({ children }: { children: ReactNode }) {
     const [provider, setProvider] = useState<Provider>("pdl");
-    const [apiKey, setApiKey] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [results, setResults] = useState<WebCandidate[] | null>(null);
@@ -42,13 +45,16 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
     const [creditsUsed, setCreditsUsed] = useState<number | undefined>();
     const [extractedJD, setExtractedJD] = useState<ExtractedJD | null>(null);
     const [warning, setWarning] = useState("");
+    const [suppressedByFreshness, setSuppressedByFreshness] = useState(0);
+    const [filteredOutByFilters, setFilteredOutByFilters] = useState(0);
+    const [lastFilters, setLastFilters] = useState<CandidateFilters | undefined>(undefined);
 
     const runSearch = async ({
         structuredJD,
         jdMode,
         jdText,
-        groqApiKey,
-        apiKey: searchApiKey,
+        filters,
+        freshSearch,
     }: RunSearchArgs) => {
         setLoading(true);
         setError("");
@@ -58,7 +64,8 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     provider,
-                    apiKey: searchApiKey.trim(),
+                    // No API keys are sent from the browser any more — the
+                    // server reads them from its environment (providerKeys.ts).
                     jobTitle: structuredJD.title,
                     mustHaveSkills: structuredJD.mustHaveSkills,
                     mandatorySkills: structuredJD.mandatorySkills,
@@ -66,7 +73,8 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                     roleType: structuredJD.roleType,
                     jdMode,
                     jdText,
-                    groqApiKey: groqApiKey.trim(),
+                    filters,
+                    freshSearch: Boolean(freshSearch),
                 }),
             });
             const data = await res.json();
@@ -77,6 +85,9 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
             setCreditsUsed(data.creditsUsed);
             setExtractedJD(data.extractedJD ?? null);
             setWarning(data.warning ?? "");
+            setSuppressedByFreshness(data.suppressedByFreshness ?? 0);
+            setFilteredOutByFilters(data.filteredOutByFilters ?? 0);
+            setLastFilters(filters);
             return true;
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Unknown error");
@@ -91,6 +102,9 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
         setError("");
         setWarning("");
         setExtractedJD(null);
+        setSuppressedByFreshness(0);
+        setFilteredOutByFilters(0);
+        setLastFilters(undefined);
     };
 
     return (
@@ -98,8 +112,6 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
             value={{
                 provider,
                 setProvider,
-                apiKey,
-                setApiKey,
                 loading,
                 error,
                 results,
@@ -108,6 +120,9 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                 creditsUsed,
                 extractedJD,
                 warning,
+                suppressedByFreshness,
+                filteredOutByFilters,
+                lastFilters,
                 runSearch,
                 reset,
             }}

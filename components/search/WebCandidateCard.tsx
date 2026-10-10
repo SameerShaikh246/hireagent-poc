@@ -12,6 +12,9 @@ import {
     TriangleAlert,
     BadgeCheck,
     ChevronDown,
+    Briefcase,
+    Award,
+    IndianRupee,
     createLucideIcon
 } from "lucide-react";
 import type { WebCandidate } from "@/lib/webSearchTypes";
@@ -49,6 +52,11 @@ function RankBadge({ rank }: { rank: number }) {
     );
 }
 
+// Formats an INR number the way HireAgent's own docs example it: ₹7,00,000
+function formatINR(n: number): string {
+    return `₹${n.toLocaleString("en-IN")}`;
+}
+
 export default function WebCandidateCard({
     c,
     rank,
@@ -67,6 +75,7 @@ export default function WebCandidateCard({
     const rec = recLabel(c.relevanceScore);
     const isOpen = expandedId === c.id;
     const isPDL = c.provider === "pdl";
+    const isOpenToWork = c.openToWork?.status === "YES";
 
     return (
         <div className="fade-in bg-(--surface) border border-(--border) rounded-(--radius-lg) shadow-(--shadow-sm) overflow-hidden">
@@ -88,6 +97,16 @@ export default function WebCandidateCard({
                             >
                                 <BadgeCheck size={10} strokeWidth={2.5} />
                                 VERIFIED
+                            </span>
+                        )}
+                        {isOpenToWork && (
+                            <span
+                                className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                style={{ background: "var(--success-light)", color: "var(--success)" }}
+                                title={c.openToWork?.evidence}
+                            >
+                                <Briefcase size={10} strokeWidth={2.5} />
+                                OPEN TO WORK
                             </span>
                         )}
                     </div>
@@ -216,6 +235,48 @@ export default function WebCandidateCard({
                                     </div>
                                 </div>
                             )}
+
+                            {/* Phase 6 — certifications & estimated salary */}
+                            <div className="mt-3 pt-3 border-t border-(--border) flex flex-col gap-2.5">
+                                <div>
+                                    <div className="text-[11px] font-semibold text-(--text-muted) mb-1">Certifications</div>
+                                    {c.certifications && c.certifications.length > 0 ? (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {c.certifications.map((cert, i) => (
+                                                <span
+                                                    key={`${cert.name}-${i}`}
+                                                    className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg"
+                                                    style={{ background: "var(--info-light)", color: "var(--info)" }}
+                                                    title={cert.issuer}
+                                                >
+                                                    <Award size={11} strokeWidth={2.25} />
+                                                    {cert.name}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <span className="text-[11px] text-(--text-muted)">Not Available</span>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <div className="text-[11px] font-semibold text-(--text-muted) mb-1">Estimated Salary</div>
+                                    {c.estimatedSalary ? (
+                                        <span
+                                            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg"
+                                            style={{ background: "var(--warning-light)", color: "var(--warning)" }}
+                                            title={c.estimatedSalary.source}
+                                        >
+                                            <IndianRupee size={11} strokeWidth={2.25} />
+                                            {c.estimatedSalary.minINR != null && c.estimatedSalary.maxINR != null
+                                                ? `${formatINR(c.estimatedSalary.minINR)} – ${formatINR(c.estimatedSalary.maxINR)} (est.)`
+                                                : `${c.estimatedSalary.currency ?? "$"}${c.estimatedSalary.min ?? "?"}–${c.estimatedSalary.max ?? "?"} (est.)`}
+                                        </span>
+                                    ) : (
+                                        <span className="text-[11px] text-(--text-muted)">Not Available</span>
+                                    )}
+                                </div>
+                            </div>
                         </div>
 
                         <div>
@@ -241,6 +302,26 @@ export default function WebCandidateCard({
                                             {c.experienceYears} yrs exp
                                         </span>
                                     )}
+                                </div>
+                            )}
+
+                            {/* Open to Work — shown for every provider, not just PDL, since GitHub's
+                               `hireable` field and bio-phrase matches apply to any source. Silent
+                               (no badge) when status is UNKNOWN — absence of evidence isn't shown
+                               as a claim either way. */}
+                            {c.openToWork && c.openToWork.status !== "UNKNOWN" && (
+                                <div
+                                    className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg mb-3 w-fit"
+                                    style={
+                                        isOpenToWork
+                                            ? { background: "var(--success-light)", color: "var(--success)" }
+                                            : { background: "var(--surface-hover)", color: "var(--text-secondary)" }
+                                    }
+                                >
+                                    <Briefcase size={12} strokeWidth={2.25} />
+                                    <span className="font-medium">
+                                        {isOpenToWork ? "Open to Work" : "Not currently open to work"}
+                                    </span>
                                 </div>
                             )}
 

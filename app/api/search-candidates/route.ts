@@ -6,6 +6,7 @@ import { buildSearchContextHash, filterByFreshness, recordSearchHistory } from "
 import { db } from "@/lib/db";
 import { convertUsdToInr } from "@/lib/utils/currency";
 import { applyCandidateFilters, type CandidateFilters } from "@/lib/filters/applyCandidateFilters";
+import { withKeyFailover, getProviderKeys, getCentralGroqKeys, ProviderKeyError } from "@/lib/providerKeys";
 
 // ─── Shared types ──────────────────────────────────────────────────────────────
 export interface WebCandidate {
@@ -31,7 +32,7 @@ export interface WebCandidate {
   confirmedSkills?: string[];  // GitHub only: matchedSkills confirmed via a language: query
   candidateId?: string;        // set after upsertCandidate() — the DB row this maps to
 
-  // candidate information enhancements. Populated from the
+  // andidate information enhancements. Populated from the
   // persisted Candidate row (post-merge), not just this one provider hit —
   // see the enrichment block in POST(). Absent/empty = "Not Available" in
   // the UI, not an error.
@@ -45,7 +46,7 @@ export interface WebCandidate {
     min?: number;
     max?: number;
     currency?: string;
-    minINR?: number;
+    minINR?: number;   // only set when currency is USD — rough conversion, see lib/utils/currency.ts
     maxINR?: number;
     source?: string;   // e.g. "PDL inferred_salary" — surface this in the UI so recruiters know it's an estimate
   } | null;
@@ -182,7 +183,6 @@ interface ExtractedJDFields {
 
 async function extractJDFieldsForSearch(
   jdText: string,
-  groqApiKey: string,
 ): Promise<ExtractedJDFields> {
   const prompt = `You are a recruiting assistant.
 
@@ -224,7 +224,7 @@ Job description:
 """${jdText.slice(0, 6000)}"""`;
 
   const raw = await groqGenerate(prompt, {
-    apiKey: groqApiKey,
+    ...getCentralGroqKeys(),
     model: "openai/gpt-oss-20b",
     temperature: 0.1,
     maxTokens: 800,
@@ -273,6 +273,7 @@ interface EnrichedCandidate {
   experienceYears?: number;
   matchedSkills: string[];
   confidence: number;
+  // Candidate quality gate
   isValidCandidate: boolean;
   nameConfidence: number;
   rejectionReason?: string;
@@ -301,10 +302,9 @@ function extractProfileSource(candidate: WebCandidate): string {
 async function enrichWebCandidatesWithGroq(
   candidates: WebCandidate[],
   allSkills: string[],
-  groqApiKey: string,
 ): Promise<WebCandidate[]> {
-  if (!candidates.length || !groqApiKey?.trim()) {
-    return candidates;
+  if (!candidates.length || !getProviderKeys("groq").length) {
+    return candidates; // enrichment is optional — degrade gracefully with no Groq key configured
   }
 
   const input = candidates.map((candidate, index) => ({
@@ -401,7 +401,7 @@ ${JSON.stringify(input, null, 2)}
 
   try {
     const raw = await groqGenerate(prompt, {
-      apiKey: groqApiKey.trim(),
+      ...getCentralGroqKeys(),
       model: "openai/gpt-oss-120b",
       temperature: 0.1,
       maxTokens: 5000,
@@ -699,36 +699,40 @@ async function searchPDL(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-  apiKey: string,
 ): Promise<{ candidates: WebCandidate[]; totalFound: number; creditsUsed: number }> {
   const sql = buildPDLQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
-  const res = await fetch("https://api.peopledatalabs.com/v5/person/search", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Api-Key": apiKey,
-    },
-    body: JSON.stringify({
-      sql,
-      size: 5,
-      titlecase: true,
-      dataset: "resume",
-    }),
+  // PDL bills per record returned, so its pool stays at 5 per call (unlike
+  // the 15 used for the web/GitHub providers). 401/402/403 here mean a bad
+  // or exhausted key — withKeyFailover moves on to the next PDL key, if any.
+  const data = await withKeyFailover("pdl", async (apiKey) => {
+    const res = await fetch("https://api.peopledatalabs.com/v5/person/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Api-Key": apiKey,
+      },
+      body: JSON.stringify({
+        sql,
+        size: 5,
+        titlecase: true,
+        dataset: "resume",
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401 || res.status === 403) {
+        throw new ProviderKeyError("Invalid PDL API key.", res.status);
+      }
+      if (res.status === 402) {
+        throw new ProviderKeyError("PDL credits exhausted on this key.", res.status);
+      }
+      throw new ProviderKeyError(`PDL API error ${res.status}: ${text.slice(0, 300)}`, res.status);
+    }
+
+    return res.json();
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 401 || res.status === 403) {
-      throw new Error("Invalid PDL API key. Sign up at https://peopledatalabs.com");
-    }
-    if (res.status === 402) {
-      throw new Error("PDL credits exhausted. Upgrade your plan at https://peopledatalabs.com/pricing");
-    }
-    throw new Error(`PDL API error ${res.status}: ${text.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
   const records: PDLPersonRecord[] = data.data ?? [];
   const totalFound: number = data.total ?? records.length;
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
@@ -861,9 +865,15 @@ async function searchTavily(query: string, apiKey: string): Promise<RawResult[]>
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: apiKey, query: `${query} (India OR Bangalore OR Hyderabad OR Pune)`, search_depth: "advanced", max_results: 20, include_raw_content: true }),
+    body: JSON.stringify({ api_key: apiKey, query: `${query} (India OR Bangalore OR Hyderabad OR Pune)`, search_depth: "advanced", max_results: WEB_SEARCH_POOL_SIZE, include_raw_content: true }),
   });
-  if (!res.ok) throw new Error(res.status === 401 ? "Invalid Tavily API key" : `Tavily error ${res.status}`);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new ProviderKeyError(
+      `Tavily error ${res.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ""}`,
+      res.status,
+    );
+  }
   const data = await res.json();
   return (data.results ?? []).map((r: { title?: string; url?: string; content?: string }) => ({
     title: r.title ?? "", url: r.url ?? "", snippet: r.content ?? "",
@@ -874,9 +884,15 @@ async function searchExa(query: string, apiKey: string): Promise<RawResult[]> {
   const res = await fetch("https://api.exa.ai/search", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-    body: JSON.stringify({ query: `${query} India`, numResults: 20, type: "keyword", contents: { text: { maxCharacters: 400 } } }),
+    body: JSON.stringify({ query: `${query} India`, numResults: WEB_SEARCH_POOL_SIZE, type: "keyword", contents: { text: { maxCharacters: 400 } } }),
   });
-  if (!res.ok) throw new Error(res.status === 401 ? "Invalid Exa API key" : `Exa error ${res.status}`);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new ProviderKeyError(
+      `Exa error ${res.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ""}`,
+      res.status,
+    );
+  }
   const data = await res.json();
   return (data.results ?? []).map((r: { title?: string; url?: string; text?: string }) => ({
     title: r.title ?? "", url: r.url ?? "", snippet: (r.text ?? "").slice(0, 500),
@@ -889,13 +905,19 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
     headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
       q: query,
-      num: 20,
+      num: WEB_SEARCH_POOL_SIZE,
       gl: "in",
       hl: "en",
       location: "India"
     }),
   });
-  if (!res.ok) throw new Error(res.status === 401 ? "Invalid Serper API key" : `Serper error ${res.status}`);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new ProviderKeyError(
+      `Serper error ${res.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ""}`,
+      res.status,
+    );
+  }
   const data = await res.json();
   return (data.organic ?? []).map((r: { title?: string; link?: string; snippet?: string }) => ({
     title: r.title ?? "", url: r.link ?? "", snippet: r.snippet ?? "",
@@ -905,68 +927,78 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
 const DEFAULT_LOCATION = "India";
 // How many candidates actually get shown/recorded-as-seen per search, once
 // the wider provider pools have been through freshness + recruiter filters.
-// Raising provider pool sizes without this would just show more people per
-// search instead of fixing "same 10 every time" — this is what keeps the
-// user-facing result count stable while giving freshness room to work.
 const DISPLAY_LIMIT = 10;
+// Per-provider pool size, per query — kept above DISPLAY_LIMIT so freshness
+// has somewhere to fall back to on a repeat search, but reined in from the
+// earlier 25 to control cost (more results = more Groq enrichment tokens
+// and more DB upserts per search). PDL is handled separately at its own
+// (credit-billed) size: 5.
+const WEB_SEARCH_POOL_SIZE = 15;
+const GITHUB_POOL_SIZE = 15;
 
 async function runWebSearch(
   provider: "tavily" | "exa" | "serper",
-  apiKey: string,
   jobTitle: string,
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
   location: string = DEFAULT_LOCATION,
-  groqApiKey?: string,
 ): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
+  const providerName = provider; // "tavily" | "exa" | "serper" — same as KeyedProvider
   const skills = [...new Set([...mandatorySkills, ...mustHaveSkills])].slice(0, 4).join(" ");
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
+  // jobTitle is deliberately NOT quoted (no exact-phrase match). Quoting it
+  // forces Google to find that literal string verbatim in a profile, which
+  // is brittle two ways: a typo in the recruiter's title zeroes out the
+  // query entirely, and even a correctly-spelled title rarely appears
+  // word-for-word in a real profile (a "Python Developer" search won't
+  // phrase-match "Senior Python Developer"). Unquoted, Google treats it as
+  // keywords instead — much more forgiving, and skills still carry the
+  // real matching weight downstream via matchSkillsInText/scoring.
   const queries = [
-    `site:linkedin.com/in "${jobTitle}" ${skills} "${location}"`,
-    `site:linkedin.com/in "${jobTitle}" ${skills} Bengaluru OR Bangalore OR Hyderabad OR Pune OR Chennai OR Mumbai OR Delhi`,
-    `"${jobTitle}" resume OR portfolio ${skills} "${location}" -jobs -hiring`,
+    `site:linkedin.com/in ${jobTitle} ${skills} "${location}"`,
+    `site:linkedin.com/in ${jobTitle} ${skills} Bengaluru OR Bangalore OR Hyderabad OR Pune OR Chennai OR Mumbai OR Delhi`,
+    `${jobTitle} resume OR portfolio ${skills} "${location}" -jobs -hiring`,
   ];
 
   const run = provider === "tavily" ? searchTavily : provider === "exa" ? searchExa : searchSerper;
 
-  const settled = await Promise.allSettled(queries.map((q) => run(q, apiKey)));
-  const anySuccess = settled.some((r) => r.status === "fulfilled");
-  if (!anySuccess) {
-    const err = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
-    throw new Error(err?.reason?.message ?? "Search failed");
-  }
+  const { merged, totalFound } = await withKeyFailover(providerName, async (apiKey) => {
+    const settled = await Promise.allSettled(queries.map((q) => run(q, apiKey)));
+    const anySuccess = settled.some((r) => r.status === "fulfilled");
+    if (!anySuccess) {
+      // Re-throw the first rejection so withKeyFailover can see its status
+      // and decide whether to fail over to the next key.
+      const err = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      throw err?.reason ?? new Error("Search failed");
+    }
 
-  const seen = new Set<string>();
-  const merged: RawResult[] = [];
-  for (const r of settled) {
-    if (r.status === "fulfilled") {
-      for (const item of r.value) {
-        if (item.url && !seen.has(item.url)) { seen.add(item.url); merged.push(item); }
+    const seen = new Set<string>();
+    const mergedResults: RawResult[] = [];
+    for (const r of settled) {
+      if (r.status === "fulfilled") {
+        for (const item of r.value) {
+          if (item.url && !seen.has(item.url)) { seen.add(item.url); mergedResults.push(item); }
+        }
       }
     }
-  }
+    return { merged: mergedResults, totalFound: mergedResults.length };
+  });
 
   let candidates = merged
     .filter((r) => isUsefulWebResult(r.url, r.title, r.snippet))
     .map((r, i) => webResultToCandidate(r, i, allSkills, provider))
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 25);
-  // NOTE: was slice(0, 10) — widened so POST()'s freshness check has a real
-  // fallback pool instead of nothing once the top 10 get suppressed.
+    .slice(0, WEB_SEARCH_POOL_SIZE);
 
-  if (groqApiKey?.trim()) {
-    candidates = await enrichWebCandidatesWithGroq(
-      candidates,
-      allSkills,
-      groqApiKey,
-    );
+  if (getProviderKeys("groq").length > 0) {
+    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills);
   }
 
   return {
     candidates,
-    totalFound: merged.length,
+    totalFound,
   };
 }
 
@@ -993,7 +1025,6 @@ async function planGitHubQuery(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-  groqApiKey: string,
 ): Promise<GitHubQueryPlan> {
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
@@ -1025,7 +1056,7 @@ Return ONLY valid JSON, nothing else:
 
   try {
     const raw = await groqGenerate(prompt, {
-      apiKey: groqApiKey,
+      ...getCentralGroqKeys(),
       model: "openai/gpt-oss-20b",
       temperature: 0.1,
       maxTokens: 400,
@@ -1090,7 +1121,7 @@ interface GitHubUserProfile {
   public_repos: number;
   followers: number;
   html_url: string;
-  hireable?: boolean | null;
+  hireable?: boolean | null; // confirmed real field — see lib/normalizer/normalizeCandidate.ts
 }
 
 async function fetchGitHubJSON(
@@ -1104,10 +1135,10 @@ async function fetchGitHubJSON(
   const reset = res.headers.get("x-ratelimit-reset");
 
   if (!res.ok) {
+    // ProviderKeyError carries the HTTP status so withKeyFailover can tell a
+    // rate-limit/bad-key failure (try the next token) from anything else.
     if (res.status === 401) {
-      throw new Error(
-        "Invalid GitHub token. Please check your GitHub API key.",
-      );
+      throw new ProviderKeyError("Invalid GitHub token.", 401);
     }
 
     if (res.status === 403 && remaining === "0") {
@@ -1120,33 +1151,26 @@ async function fetchGitHubJSON(
         : "";
 
       if (headers.Authorization) {
-        throw new Error(
-          `GitHub API rate limit reached.${resetText}`,
-        );
+        throw new ProviderKeyError(`GitHub API rate limit reached.${resetText}`, 429);
       }
 
-      throw new Error(
-        `GitHub API rate limit reached for unauthenticated requests. Add a GitHub Personal Access Token to continue.${resetText}`,
+      throw new ProviderKeyError(
+        `GitHub API rate limit reached for unauthenticated requests. Ask an admin to configure GITHUB_API_KEYS on the server.${resetText}`,
+        429,
       );
     }
 
     if (res.status === 429) {
-      throw new Error(
-        "GitHub API rate limit exceeded. Add a GitHub Personal Access Token or try again later.",
-      );
+      throw new ProviderKeyError("GitHub API rate limit exceeded.", 429);
     }
 
     if (res.status === 403) {
-      throw new Error(
-        "GitHub API request forbidden. Check your GitHub API key and permissions.",
-      );
+      throw new ProviderKeyError("GitHub API request forbidden — check the token's permissions.", 403);
     }
 
     const text = await res.text();
 
-    throw new Error(
-      `GitHub API error ${res.status}: ${text.slice(0, 200)}`,
-    );
+    throw new ProviderKeyError(`GitHub API error ${res.status}: ${text.slice(0, 200)}`, res.status);
   }
 
   const data = await res.json();
@@ -1161,14 +1185,36 @@ async function fetchGitHubJSON(
 }
 
 
+// Outer dispatcher: uses the centralized GITHUB_API_KEYS pool with failover
+// when tokens are configured, and falls back to GitHub's unauthenticated
+// (60/hr) mode when none are — so GitHub search still works out of the box
+// on a fresh deployment, unlike PDL/Tavily/Exa/Serper which hard-require keys.
 async function searchGitHubAPI(
   jobTitle: string,
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-  apiKey: string,
   location: string = DEFAULT_LOCATION,
-  groqApiKey?: string,
+): Promise<{
+  candidates: WebCandidate[];
+  totalFound: number;
+  warning?: string;
+}> {
+  if (getProviderKeys("github").length === 0) {
+    return runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, "", location);
+  }
+  return withKeyFailover("github", (key) =>
+    runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, key, location),
+  );
+}
+
+async function runGitHubSearch(
+  jobTitle: string,
+  mandatorySkills: string[],
+  mustHaveSkills: string[],
+  niceToHaveSkills: string[],
+  apiKey: string, // empty string = unauthenticated
+  location: string = DEFAULT_LOCATION,
 ): Promise<{
   candidates: WebCandidate[];
   totalFound: number;
@@ -1176,11 +1222,11 @@ async function searchGitHubAPI(
 }> {
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
-  if (!groqApiKey?.trim()) {
-    throw new Error("A Groq API key is required for GitHub search — it's used to translate the JD into an effective query and to clean up results.");
+  if (!getProviderKeys("groq").length) {
+    throw new Error("GitHub search needs a Groq API key configured on the server (GROQ_API_KEYS) — it's used to translate the JD into an effective query and to clean up results.");
   }
 
-  const plan = await planGitHubQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, groqApiKey.trim());
+  const plan = await planGitHubQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -1210,7 +1256,7 @@ async function searchGitHubAPI(
   const settled = await Promise.allSettled(
     variants.map((v) =>
       fetchGitHubJSON(
-        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=25&sort=repositories&order=desc`,
+        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=${GITHUB_POOL_SIZE}&sort=repositories&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1236,7 +1282,7 @@ async function searchGitHubAPI(
       fetchGitHubJSON(
         `https://api.github.com/search/users?q=${encodeURIComponent(
           fallbackQ
-        )}&per_page=25&sort=followers&order=desc`,
+        )}&per_page=${GITHUB_POOL_SIZE}&sort=followers&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1265,11 +1311,11 @@ async function searchGitHubAPI(
         `GitHub search is using the unauthenticated API. ` +
         `You have ${remaining}${limit !== undefined ? ` of ${limit}` : ""} ` +
         `requests remaining. ` +
-        `Add a GitHub Personal Access Token for higher rate limits.`;
+        `Configure GITHUB_API_KEYS on the server for higher rate limits.`;
     } else {
       githubWarning =
         "GitHub search is using the unauthenticated API. " +
-        "Add a GitHub Personal Access Token for higher rate limits.";
+        "Configure GITHUB_API_KEYS on the server for higher rate limits.";
     }
   }
 
@@ -1291,7 +1337,7 @@ async function searchGitHubAPI(
   }
 
   const profileSettled = await Promise.allSettled(
-    items.slice(0, 25).map((item) =>
+    items.slice(0, GITHUB_POOL_SIZE).map((item) =>
       fetchGitHubJSON(
         `https://api.github.com/users/${item.login}`,
         headers,
@@ -1346,8 +1392,8 @@ async function searchGitHubAPI(
   // limit afterward. Slicing here would mean a repeat search has nothing
   // left to fall back on once the top 10 get suppressed as "already seen".
 
-  if (groqApiKey?.trim()) {
-    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills, groqApiKey.trim());
+  if (getProviderKeys("groq").length > 0) {
+    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills);
   }
 
   return {
@@ -1368,21 +1414,35 @@ async function searchInternalDB(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
+  pagination: { skip?: number; take?: number } = {},
 ): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
   const canonMandatory = mandatorySkills.map(canonicalSkill);
   const canonMust = mustHaveSkills.map(canonicalSkill);
   const canonNice = niceToHaveSkills.map(canonicalSkill);
 
+  // "Virtualized" fetching: load one bounded page at a time instead of
+  // scanning a fixed 200 rows on every call, so cost stays flat as the
+  // candidate DB grows. Default page = 15 (same pool size as the web/GitHub
+  // providers); callers can pass dbSkip to page further on repeat searches.
+  const take = Math.min(Math.max(pagination.take ?? 15, 1), 50);
+  const skip = Math.max(pagination.skip ?? 0, 0);
+
+  const skillWhere = allSkills.length > 0 ? { skills: { some: { skill: { in: allSkills } } } } : undefined;
+
   // Broad net at the DB level (any matching skill, or everyone if no skills
   // given) — precise tiered scoring happens in JS below, same as every
   // other provider's scoring function in this file.
-  const rows = await db.candidate.findMany({
-    where: allSkills.length > 0 ? { skills: { some: { skill: { in: allSkills } } } } : undefined,
-    include: { skills: true, certifications: true, identities: true },
-    take: 200,
-    orderBy: { lastSeenAt: "desc" },
-  });
+  const [rows, totalMatching] = await Promise.all([
+    db.candidate.findMany({
+      where: skillWhere,
+      include: { skills: true, certifications: true, identities: true },
+      take,
+      skip,
+      orderBy: { lastSeenAt: "desc" },
+    }),
+    db.candidate.count({ where: skillWhere }),
+  ]);
 
   const reqTitle = normalize(jobTitle);
   const titleWords = reqTitle.split(" ").filter((w) => w.length > 2);
@@ -1461,53 +1521,62 @@ async function searchInternalDB(
   // No slice here — same reasoning as GitHub/web-search above. The `take: 200`
   // on the query above is the real cap; POST() slices to the display limit
   // after freshness filtering.
-  return { candidates: sorted, totalFound: rows.length };
+  return { candidates: sorted, totalFound: totalMatching };
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+    // API keys are no longer accepted from the client — they come from the
+    // server's environment (see lib/providerKeys.ts). Any apiKey/groqApiKey
+    // still sent in the body is simply ignored.
     const {
       provider,
-      apiKey,
       jobTitle = "",
       mustHaveSkills = [],
       mandatorySkills = [],
       niceToHaveSkills = [],
       jdMode = "structured",
       jdText = "",
-      groqApiKey = "",
       freshSearch = false,
       filters,
+      dbSkip,
+      dbTake,
     }: {
       provider: Provider;
-      apiKey: string;
       jobTitle: string;
       mustHaveSkills: string[];
       mandatorySkills: string[];
       niceToHaveSkills: string[];
       jdMode?: JDMode;
       jdText?: string;
-      groqApiKey?: string;
       freshSearch?: boolean;
       filters?: CandidateFilters;
+      dbSkip?: number; // internal DB provider only — page offset
+      dbTake?: number; // internal DB provider only — page size (default 15, max 50)
     } = body;
 
     if (!["pdl", "tavily", "exa", "serper", "github", "db"].includes(provider))
       return NextResponse.json({ error: "Invalid provider." }, { status: 400 });
 
-    // GitHub works unauthenticated; the internal DB needs no external key at all.
-    if (!["github", "db"].includes(provider) && (!apiKey || apiKey.trim().length < 5))
-      return NextResponse.json({ error: "API key is required." }, { status: 400 });
-
-    // PDL returns structured data directly, and the internal DB was already
-    // cleaned up by Groq when each candidate was first persisted — neither
-    // needs a fresh Groq call here.
-    if (!["pdl", "db"].includes(provider) && (!groqApiKey || groqApiKey.trim().length < 10)) {
+    // Fail early with a clear, actionable message when the SERVER isn't
+    // configured — rather than a deep 500 from inside a provider call.
+    // GitHub works without keys (unauthenticated, 60/hr) and db needs none.
+    if (!["github", "db"].includes(provider) && !getProviderKeys(provider as "pdl" | "tavily" | "exa" | "serper").length) {
       return NextResponse.json(
-        { error: "A Groq API key is required for tavily/exa/serper/github so a good search query can be built and results can be cleaned up and validated. PDL doesn't need it since it returns structured data directly." },
-        { status: 400 },
+        { error: `${provider.toUpperCase()} is not configured on the server. Ask an admin to set ${provider.toUpperCase()}_API_KEYS.` },
+        { status: 503 },
+      );
+    }
+
+    // Groq is needed for everything except PDL (already structured) and db
+    // (already cleaned up when first persisted), plus free-text JD parsing.
+    const needsGroq = !["pdl", "db"].includes(provider) || jdMode === "freetext";
+    if (needsGroq && !getProviderKeys("groq").length) {
+      return NextResponse.json(
+        { error: "Groq is not configured on the server. Ask an admin to set GROQ_API_KEYS." },
+        { status: 503 },
       );
     }
 
@@ -1523,13 +1592,9 @@ export async function POST(req: NextRequest) {
           { error: "Paste at least 20 characters of job description first." },
           { status: 400 },
         );
-      if (!groqApiKey || groqApiKey.trim().length < 10)
-        return NextResponse.json(
-          { error: "A Groq API key is required to parse a free-text JD." },
-          { status: 400 },
-        );
-
-      const extracted = await extractJDFieldsForSearch(jdText.trim(), groqApiKey.trim());
+      // Groq availability was already validated above (needsGroq covers
+      // freetext mode), so no per-request key check is needed here.
+      const extracted = await extractJDFieldsForSearch(jdText.trim());
 
       finalJobTitle = extracted.jobTitle || finalJobTitle;
       finalMandatorySkills = extracted.mandatorySkills.length > 0 ? extracted.mandatorySkills : finalMandatorySkills;
@@ -1562,29 +1627,31 @@ export async function POST(req: NextRequest) {
     };
 
     if (provider === "pdl") {
-      result = await searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills, apiKey.trim());
+      result = await searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
     } else if (provider === "db") {
-      result = await searchInternalDB(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
+      result = await searchInternalDB(
+        finalJobTitle,
+        finalMandatorySkills,
+        finalMustHaveSkills,
+        finalNiceToHaveSkills,
+        { skip: dbSkip, take: dbTake },
+      );
     } else if (provider === "github") {
       result = await searchGitHubAPI(
         finalJobTitle,
         finalMandatorySkills,
         finalMustHaveSkills,
         finalNiceToHaveSkills,
-        apiKey?.trim() ?? "",
         DEFAULT_LOCATION,
-        groqApiKey.trim(),
       );
     } else {
       result = await runWebSearch(
         provider,
-        apiKey.trim(),
         finalJobTitle,
         finalMandatorySkills,
         finalMustHaveSkills,
         finalNiceToHaveSkills,
         DEFAULT_LOCATION,
-        groqApiKey.trim(),
       );
     }
 

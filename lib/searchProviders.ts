@@ -14,6 +14,10 @@ export const PROVIDERS: Record<
     tip: string;
     isStructured: boolean;
     icon: string;
+    /** false = no API key needed at all (github: optional but works without one; db: never needed). Defaults to true when omitted. */
+    requiresKey?: boolean;
+    /** true = don't even show the API key input card for this provider (db only). */
+    hideKeyInput?: boolean;
   }
 > = {
   pdl: {
@@ -39,6 +43,7 @@ export const PROVIDERS: Record<
     tip: "Searches real GitHub profiles by location + language + bio keywords, then pulls each profile's bio, company, and repo activity directly from GitHub's API. Completely free, no signup required — add a personal access token only if you hit the 60/hr rate limit.",
     isStructured: false,
     icon: "github",
+    requiresKey: false,
   },
   tavily: {
     label: "Tavily",
@@ -75,6 +80,20 @@ export const PROVIDERS: Record<
     tip: "Raw Google results. Good fallback for both role types but may surface job postings — filtered automatically. Use PDL for accurate structured results.",
     isStructured: false,
     icon: "globe",
+  },
+  db: {
+    label: "Your Candidate Database",
+    free: "Unlimited — no external calls",
+    signupUrl: "",
+    placeholder: "",
+    keyHint: "No key needed — searches candidates HireAgent has already found and saved from any previous PDL, GitHub, or web search",
+    bestFor: "Reuse past searches",
+    tone: "neutral",
+    tip: "Searches your own growing pool of previously-found candidates — no API key, no external calls, no cost. Same skill matching and scoring as every other provider, just against people you've already discovered.",
+    isStructured: true,
+    icon: "history",
+    requiresKey: false,
+    hideKeyInput: true,
   },
 };
 

@@ -1,7 +1,6 @@
 "use client";
-import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, ExternalLink, Sparkles, PencilLine } from "lucide-react";
+import { AlertCircle, Sparkles, PencilLine } from "lucide-react";
 import Link from "next/link";
 import { useJD } from "@/context/JDContext";
 import { useWebSearch } from "@/context/WebSearchContext";
@@ -12,9 +11,8 @@ import ProviderCard from "./ProviderCard";
 
 export default function SearchSetupPanel() {
     const router = useRouter();
-    const { jdMode, structuredJD, freeTextJD, groqApiKey } = useJD();
-    const { provider, setProvider, apiKey, setApiKey, loading, error, runSearch } = useWebSearch();
-    const [localApiKey, setLocalApiKey] = useState(apiKey);
+    const { jdMode, structuredJD, freeTextJD } = useJD();
+    const { provider, setProvider, loading, error, runSearch } = useWebSearch();
 
     const isFreeText = jdMode === "freetext";
     const jdText = isFreeText ? freeTextJD : buildJDText(structuredJD);
@@ -28,7 +26,6 @@ export default function SearchSetupPanel() {
     ];
 
     const meta = PROVIDERS[provider];
-    const apiKeyOk = provider === "github" ? true : localApiKey.trim().length > 4;
 
     const hasJD = isFreeText
         ? jdText.trim().length >= 20
@@ -36,21 +33,15 @@ export default function SearchSetupPanel() {
         structuredJD.mustHaveSkills.length > 0 ||
         structuredJD.mandatorySkills.length > 0;
 
-    const canSearch = isFreeText
-        ? apiKeyOk && groqApiKey.trim().length > 10 && jdText.trim().length >= 20
-        : apiKeyOk && hasJD;
+    // Keys live on the server now, so the only thing gating a search is
+    // having a usable job description.
+    const canSearch = hasJD;
 
     const handleSearch = async () => {
-        const key = localApiKey.trim();
-
-        setApiKey(key);
-
         const ok = await runSearch({
             structuredJD,
             jdMode,
             jdText,
-            groqApiKey,
-            apiKey: key,
         });
 
         if (ok) {
@@ -109,7 +100,6 @@ export default function SearchSetupPanel() {
                     <span>
                         Free-text JD detected — Groq will read your job description and auto-detect
                         the role title and required skills before searching.
-                        {!groqApiKey.trim() && " Add your Groq API key on the home page first."}
                     </span>
                 </div>
             )}
@@ -137,53 +127,34 @@ export default function SearchSetupPanel() {
                         Free options
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2">
-                        <ProviderCard id="pdl" selected={provider === "pdl"} onSelect={() => { setProvider("pdl"); setLocalApiKey(""); }} />
-                        <ProviderCard id="github" selected={provider === "github"} onSelect={() => { setProvider("github"); setLocalApiKey(""); }} />
+                        <ProviderCard id="pdl" selected={provider === "pdl"} onSelect={() => { setProvider("pdl"); }} />
+                        <ProviderCard id="github" selected={provider === "github"} onSelect={() => { setProvider("github"); }} />
                     </div>
+
+                    <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest mt-1">
+                        Your saved candidates
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <ProviderCard id="db" selected={provider === "db"} onSelect={() => { setProvider("db"); }} />
+                    </div>
+
                     <div className="text-[10px] font-semibold text-(--text-muted) uppercase tracking-widest mt-1">
                         Web search fallbacks
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2">
                         {(["tavily", "exa", "serper"] as Provider[]).map((id) => (
-                            <ProviderCard key={id} id={id} selected={provider === id} onSelect={() => { setProvider(id); setLocalApiKey(""); }} />
+                            <ProviderCard key={id} id={id} selected={provider === id} onSelect={() => { setProvider(id); }} />
                         ))}
                     </div>
                 </div>
 
-                <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-[13px] font-medium text-(--text-primary)">{meta.label} API Key</label>
-                    <a
-                        href={meta.signupUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[11px] text-(--accent) inline-flex items-center gap-0.5"
-                    >
-                        Get free key <ExternalLink size={10} />
-                    </a>
-                </div>
-                <input
-                    type="password"
-                    value={localApiKey}
-                    onChange={(e) => setLocalApiKey(e.target.value)}
-                    placeholder={meta.placeholder}
-                    disabled={loading}
-                    className="w-full border rounded-(--radius) px-3 py-2.5 text-[13px] font-data text-(--text-primary) outline-none mb-2"
-                    style={{ background: "var(--bg)", borderColor: "var(--border)" }}
-                />
-                <p className="text-[11px] text-(--text-muted)">
-                    {meta.keyHint} · Free: {meta.free}
-                </p>
             </div>
 
             {!canSearch && (
                 <p className="text-[12px] text-(--text-muted) text-center mb-3">
-                    {!apiKeyOk
-                        ? `Paste your ${meta.label} API key above`
-                        : isFreeText
-                            ? !groqApiKey.trim()
-                                ? "Add your Groq API key on the home page first"
-                                : "Write at least 20 characters of job description first"
-                            : "Add a job title or skills to the JD on the home page first"}
+                    {isFreeText
+                        ? "Write at least 20 characters of job description first"
+                        : "Add a job title or skills to the JD on the home page first"}
                 </p>
             )}
 
@@ -195,15 +166,6 @@ export default function SearchSetupPanel() {
                     <AlertCircle size={16} strokeWidth={2.25} className="shrink-0 mt-0.5" />
                     <span>
                         {error}
-                        {error.includes("Invalid") && (
-                            <>
-                                {" "}
-                                ·{" "}
-                                <a href={meta.signupUrl} target="_blank" rel="noopener noreferrer" className="underline">
-                                    Get a free key
-                                </a>
-                            </>
-                        )}
                     </span>
                 </div>
             )}

@@ -9,13 +9,18 @@ import parseAgent from "@/lib/parsers/parseResume";
 import { jdIntelligenceAgent } from "@/lib/agents/jdIntelligenceAgent";
 import { scoreAgent } from "@/lib/agents/scoreAgent";
 import { justifyAgent } from "@/lib/agents/justifyAgent";
+import { getProviderKeys } from "@/lib/providerKeys";
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
 
     const jd = formData.get("jobDescription") as string;
-    const apiKey = formData.get("apiKey") as string;
+    // Groq keys now come from the server's GROQ_API_KEYS (with automatic
+    // failover between keys). A key typed into the page is only a FALLBACK
+    // for servers that haven't been configured yet; once GROQ_API_KEYS is set
+    // it is ignored.
+    const fallbackApiKey = ((formData.get("apiKey") as string) ?? "").trim();
     const files = formData.getAll("resumes") as File[];
     const jdMode = (formData.get("jdMode") as string) ?? "freetext";
     const roleType: RoleType =
@@ -46,10 +51,10 @@ export async function POST(req: NextRequest) {
         { error: "Job description is too short." },
         { status: 400 },
       );
-    if (!apiKey || apiKey.trim().length < 10)
+    if (!getProviderKeys("groq").length && fallbackApiKey.length < 10)
       return NextResponse.json(
-        { error: "Groq API key is required." },
-        { status: 400 },
+        { error: "Groq is not configured on the server. Ask an admin to set GROQ_API_KEYS." },
+        { status: 503 },
       );
     if (!files || files.length === 0)
       return NextResponse.json(
@@ -87,7 +92,7 @@ export async function POST(req: NextRequest) {
     const jdIntelligence = await jdIntelligenceAgent(
       jd,
       structuredInput,
-      apiKey,
+      fallbackApiKey,
     );
 
     const mustHaveSkills =
@@ -154,16 +159,16 @@ export async function POST(req: NextRequest) {
           mustHaveSkills,
           niceToHaveSkills,
           correctedRoleType,
-          apiKey,
+          fallbackApiKey,
         );
       }
-      // With ruleBlend = 0.4, finalScore is 40% rule-based, 60% AI.
+
       const overallScore = ruleScore.disqualified
         ? 0
         : Math.round(
-            ruleScore.total * ruleBlend +
-              aiAssessment.roleFitScore * (1 - ruleBlend),
-          );
+          ruleScore.total * ruleBlend +
+          aiAssessment.roleFitScore * (1 - ruleBlend),
+        );
       aiAssessment.overallScore = overallScore;
 
       allCandidates.push({

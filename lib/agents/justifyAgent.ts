@@ -5,6 +5,7 @@ import type {
   RoleType,
 } from "@/types";
 import { groqGenerate } from "../groq";
+import { getCentralGroqKeys } from "../providerKeys";
 
 export async function justifyAgent(
   resume: ParsedResume,
@@ -13,7 +14,9 @@ export async function justifyAgent(
   mustSkills: string[],
   niceSkills: string[],
   roleType: RoleType,
-  apiKey: string
+  // Fallback only: used when the server has no GROQ_API_KEYS configured.
+  // With a server key pool set, this is ignored (and failover applies).
+  fallbackApiKey?: string,
 ): Promise<AIAssessment> {
 
   const roleContext =
@@ -51,12 +54,10 @@ Return ONLY raw JSON — no markdown, no code fences:
 
   try {
     const rawText = await groqGenerate(prompt, {
-      apiKey,
+      ...getCentralGroqKeys(fallbackApiKey),
       model: "openai/gpt-oss-120b",
       maxTokens: 1000,
-      responseFormat: { type: "json_object" },
     });
-
 
     const jsonStr = rawText
       .replace(/```(?:json)?\s*/gi, "")
@@ -75,7 +76,7 @@ Return ONLY raw JSON — no markdown, no code fences:
 
     return {
       roleFitScore,
-      overallScore: 0, 
+      overallScore: 0,
       strengths: Array.isArray(parsed.strengths)
         ? parsed.strengths.slice(0, 3)
         : [],
@@ -108,14 +109,14 @@ Return ONLY raw JSON — no markdown, no code fences:
       strengths:
         ruleScore.matchedSkills.length > 0
           ? ruleScore.matchedSkills
-              .slice(0, 3)
-              .map((s) => `Has experience with ${s}`)
+            .slice(0, 3)
+            .map((s) => `Has experience with ${s}`)
           : ["Resume submitted for review"],
       gaps:
         ruleScore.missingSkills.length > 0
           ? ruleScore.missingSkills
-              .slice(0, 3)
-              .map((s) => `Missing: ${s}`)
+            .slice(0, 3)
+            .map((s) => `Missing: ${s}`)
           : ["No major gaps detected"],
       explanation: `Rule-based score: ${ruleScore.total}/100 with ${ruleScore.experienceYears} years experience.`,
       whySelect:
@@ -130,8 +131,8 @@ Return ONLY raw JSON — no markdown, no code fences:
         ruleScore.total >= 70
           ? "Yes"
           : ruleScore.total >= 50
-          ? "Maybe"
-          : "No",
+            ? "Maybe"
+            : "No",
       alternateRoles: [],
     };
   }

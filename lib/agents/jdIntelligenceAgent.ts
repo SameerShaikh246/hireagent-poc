@@ -1,10 +1,13 @@
 import type { JDIntelligenceResult, JDChange, RoleType, StructuredJD } from "@/types";
 import { groqGenerate } from "../groq";
+import { getCentralGroqKeys } from "../providerKeys";
 
 export async function jdIntelligenceAgent(
   jdText: string,
   structured: Partial<StructuredJD> | null,
-  apiKey: string
+  // Fallback only: used when the server has no GROQ_API_KEYS configured.
+  // With a server key pool set, this is ignored (and failover applies).
+  fallbackApiKey?: string,
 ): Promise<JDIntelligenceResult> {
   const hasStructured = structured && (structured.mustHaveSkills?.length ?? 0) > 0;
 
@@ -20,7 +23,7 @@ STRUCTURED JD FIELDS (recruiter-entered — may contain errors):
 `
     : "No structured fields provided — extract from free-text JD only.";
 
- const prompt = `You are a JD intelligence system. Analyze this job description and recruiter-entered structured JD data.
+  const prompt = `You are a JD intelligence system. Analyze this job description and recruiter-entered structured JD data.
 
 ${structuredContext}
 
@@ -102,7 +105,12 @@ Return ONLY raw JSON:
 }`;
 
   try {
-    const raw = await groqGenerate(prompt, { apiKey, model: "openai/gpt-oss-120b", maxTokens: 1500, temperature: 0.1 });
+    const raw = await groqGenerate(prompt, {
+      ...getCentralGroqKeys(fallbackApiKey),
+      model: "openai/gpt-oss-120b",
+      maxTokens: 1500,
+      temperature: 0.1,
+    });
     const cleaned = raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON in JD intelligence response");

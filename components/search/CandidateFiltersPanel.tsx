@@ -1,7 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SlidersHorizontal, X } from "lucide-react";
 import type { CandidateFilters, EducationFilterLevel } from "@/lib/webSearchTypes";
+import LocationInput from "@/components/LocationInput";
 
 const EDUCATION_OPTIONS: { value: EducationFilterLevel; label: string }[] = [
     { value: "any", label: "Any" },
@@ -32,12 +33,21 @@ export default function CandidateFiltersPanel({
     const [minExperience, setMinExperience] = useState<number | "">(initialFilters?.minExperience ?? "");
     const [maxExperience, setMaxExperience] = useState<number | "">(initialFilters?.maxExperience ?? "");
     const [includeUnknown, setIncludeUnknown] = useState(initialFilters?.includeUnknown ?? false);
+    const [locations, setLocations] = useState<string[]>(initialFilters?.locations ?? []);
+
+    // Pick up a location chosen on the main page (or changed by a re-run).
+    // `?? []` matters: without it this can set `locations` to undefined.
+    useEffect(() => {
+        setLocations(initialFilters?.locations ?? []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [(initialFilters?.locations ?? []).join("|")]);
 
     const toggleSkill = (s: string) =>
         setSkills((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
 
     const activeCount =
         skills.length +
+        (locations.length > 0 ? 1 : 0) +
         (minScore !== "" ? 1 : 0) +
         (maxScore !== "" ? 1 : 0) +
         (education !== "any" ? 1 : 0) +
@@ -52,6 +62,7 @@ export default function CandidateFiltersPanel({
             education: education === "any" ? undefined : education,
             minExperience: minExperience === "" ? undefined : Number(minExperience),
             maxExperience: maxExperience === "" ? undefined : Number(maxExperience),
+            locations: locations.length ? locations : undefined,
             includeUnknown,
         };
         const hasAny = Object.entries(filters).some(
@@ -68,6 +79,7 @@ export default function CandidateFiltersPanel({
         setMinExperience("");
         setMaxExperience("");
         setIncludeUnknown(false);
+        setLocations([]);
         onApply(undefined);
     };
 
@@ -117,6 +129,10 @@ export default function CandidateFiltersPanel({
                             </div>
                         </div>
                     )}
+
+                    <div className={availableSkills.length === 0 ? "pt-3" : ""}>
+                        <LocationInput value={locations} onChange={setLocations} disabled={loading} />
+                    </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                         <div>

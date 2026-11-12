@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Search History & 30-Day Freshness Rule
+// HireAgent — Search History & 30-Day Freshness Rule (Phase 5)
 //
 // Scoped PER SEARCH CONTEXT (job title + full skill list), not globally —
 // a candidate excluded from a "React Developer" search today can still
@@ -19,7 +19,8 @@
 import { db } from "@/lib/db";
 import crypto from "crypto";
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+export const FRESHNESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const THIRTY_DAYS_MS = FRESHNESS_WINDOW_MS;
 
 /**
  * Normalizes job title + the full (mandatory + must-have + nice-to-have)
@@ -28,10 +29,18 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
  * regardless of which order the skills were entered in, or how they were
  * capitalized.
  */
-export function buildSearchContextHash(jobTitle: string, allSkills: string[]): string {
+export function buildSearchContextHash(
+    jobTitle: string,
+    allSkills: string[],
+    locations: string[] = [],
+): string {
     const normalizedTitle = jobTitle.trim().toLowerCase();
     const normalizedSkills = [...new Set(allSkills.map((s) => s.trim().toLowerCase()))].sort();
-    const key = `${normalizedTitle}::${normalizedSkills.join(",")}`;
+    const normalizedLocations = [...new Set(locations.map((l) => l.trim().toLowerCase()).filter(Boolean))].sort();
+    // Appended only when set, so existing hashes (no location) stay unchanged.
+    const key =
+        `${normalizedTitle}::${normalizedSkills.join(",")}` +
+        (normalizedLocations.length ? `::loc=${normalizedLocations.join(",")}` : "");
     return crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
@@ -69,6 +78,53 @@ export async function filterByFreshness(
         freshCandidateIds: candidateIds.filter((id) => !excluded.has(id)),
         excludedCandidateIds: candidateIds.filter((id) => excluded.has(id)),
     };
+}
+
+/**
+ * Cheap pre-check, run BEFORE any expensive per-candidate work (Groq
+ * enrichment, GitHub profile fetches): of these identity values (e.g.
+ * normalized LinkedIn URLs), which belong to a candidate already shown for
+ * this search context within the freshness window?
+ *
+ * One indexed query, no API calls — so a repeat search skips re-processing
+ * people it is going to hide anyway. Callers must pass values normalized the
+ * same way the identities were stored (see normalizeProfileUrl).
+ */
+export async function findRecentlySeenIdentityValues(
+    type: "LINKEDIN_URL" | "GITHUB_URL" | "GITHUB_LOGIN" | "PORTFOLIO_URL" | "PDL_ID",
+    values: string[],
+    searchContextHash: string,
+): Promise<Set<string>> {
+    if (values.length === 0) return new Set();
+    const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
+    const rows = await db.candidateIdentity.findMany({
+        where: {
+            type,
+            value: { in: values },
+            candidate: {
+                searchHistory: { some: { searchContextHash, lastSeenAt: { gte: cutoff } } },
+            },
+        },
+        select: { value: true },
+    });
+    return new Set(rows.map((r) => r.value));
+}
+
+/**
+ * How many PDL-sourced candidates were already shown for this context. PDL
+ * bills per record returned, so instead of re-fetching (and re-paying for)
+ * the same top records every search, the next search starts its `from`
+ * offset after the ones already seen.
+ */
+export async function countSeenPdlCandidates(searchContextHash: string): Promise<number> {
+    const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
+    return db.searchHistory.count({
+        where: {
+            searchContextHash,
+            lastSeenAt: { gte: cutoff },
+            candidate: { providerRecords: { some: { provider: "PDL" } } },
+        },
+    });
 }
 
 /**

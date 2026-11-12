@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Candidate Deduplication & Persistence
+// HireAgent — Candidate Deduplication & Persistence (Phase 4)
 //
 // Takes a NormalizedCandidate (from lib/normalizer/normalizeCandidate.ts)
 // and either merges it into an existing Candidate row or creates a new one.
@@ -19,6 +19,7 @@ import {
     Provider,
     OpenToWorkStatus,
 } from "@/lib/normalizer/normalizeCandidate";
+import { isPlausiblePersonName } from "@/lib/normalizer/validateName";
 
 // Higher = more trustworthy for OVERWRITING core profile fields.
 // PDL: structured, verified records.
@@ -52,7 +53,10 @@ export interface UpsertResult {
 }
 
 export async function upsertCandidate(normalized: NormalizedCandidate): Promise<UpsertResult> {
-    const incomingTrust = PROVIDER_TRUST[normalized.provider];
+    // Raw, un-cleaned profile text (AI clean-up failed) is saved one trust level
+    // lower, so it can't overwrite a record that was already cleaned up, and the
+    // cleaned version wins next time this person is found.
+    const incomingTrust = Math.max(0, PROVIDER_TRUST[normalized.provider] - (normalized.lowConfidence ? 1 : 0));
     const existingCandidateId = await findExistingCandidateId(normalized);
 
     let candidateId: string;
@@ -131,7 +135,14 @@ export async function upsertCandidate(normalized: NormalizedCandidate): Promise<
 }
 
 async function findExistingCandidateId(normalized: NormalizedCandidate): Promise<string | null> {
+    // Name + company is a weak signal — many different people share both (any
+    // common name at a large employer). Use it ONLY when the result has nothing
+    // stronger to go on. If a result has a profile URL / login / PDL id and that
+    // isn't in the database, it is a different profile, not a namesake to merge.
+    const hasStrongIdentity = normalized.identities.some((i) => i.type !== "NAME_COMPANY");
+
     for (const type of IDENTITY_PRIORITY) {
+        if (type === "NAME_COMPANY" && hasStrongIdentity) continue;
         const identity = normalized.identities.find((i) => i.type === type);
         if (!identity) continue;
         const found = await db.candidateIdentity.findUnique({
@@ -173,11 +184,11 @@ function buildMergeUpdate(
     // Core descriptive fields: only overwrite when this result is at least as
     // trustworthy as whatever currently owns them.
     if (incomingTrust >= existing.profileTrustScore) {
-        if (normalized.fullName) data.fullName = normalized.fullName;
+        if (normalized.fullName && isPlausiblePersonName(normalized.fullName)) data.fullName = normalized.fullName;
         if (normalized.currentTitle) data.currentTitle = normalized.currentTitle;
         if (normalized.currentCompany) data.currentCompany = normalized.currentCompany;
         if (normalized.location) data.location = normalized.location;
-        if (normalized.summary) data.summary = normalized.summary;
+        if (normalized.summary) data.summary = normalized.summary;  
         if (normalized.experienceYears !== undefined) data.experienceYears = normalized.experienceYears;
         if (normalized.educationLevel) data.educationLevel = normalized.educationLevel;
         data.profileTrustScore = Math.max(incomingTrust, existing.profileTrustScore);

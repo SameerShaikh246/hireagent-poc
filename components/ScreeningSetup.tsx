@@ -7,13 +7,14 @@ import {
     Bot,
     Trophy,
     ArrowRight,
-    KeyRound,
     Upload,
     Globe,
-    ExternalLink,
 } from "lucide-react";
 import JobDescriptionForm from "@/components/JobDescriptionForm";
 import { useJD } from "@/context/JDContext";
+import LocationInput from "@/components/LocationInput";
+import { useWebSearch } from "@/context/WebSearchContext";
+
 
 const PIPELINE = [
     { icon: FileText, label: "Parse" },
@@ -85,8 +86,8 @@ function PathCard({
 }
 
 export default function ScreeningSetup() {
-    const { jdMode, setJdMode, structuredJD, setStructuredJD, freeTextJD, setFreeTextJD, groqApiKey, setGroqApiKey } =
-        useJD();
+    const { jdMode, setJdMode, structuredJD, setStructuredJD, freeTextJD, setFreeTextJD } = useJD();
+    const { searchLocations, setSearchLocations } = useWebSearch();
 
     return (
         <div className="max-w-4xl mx-auto py-10 px-5">
@@ -117,46 +118,8 @@ export default function ScreeningSetup() {
             </div>
 
             <div className="flex flex-col gap-6">
-                {/* Step 1 — API key */}
                 <div>
-                    <StepLabel n={1}>Groq API key</StepLabel>
-                    <div
-                        className="rounded-(--radius-lg) p-5 shadow-(--shadow-sm) border"
-                        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-                    >
-                        <div className="flex items-center gap-3 mb-3">
-                            <div
-                                className="w-9 h-9 rounded-(--radius) flex items-center justify-center shrink-0"
-                                style={{ background: "var(--accent-light)" }}
-                            >
-                                <KeyRound size={16} strokeWidth={2} color="var(--accent)" />
-                            </div>
-                            <p className="text-[12px] text-(--text-muted)">
-                                Get a free key at{" "}
-                                <a
-                                    href="https://console.groq.com/keys"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-(--accent) inline-flex items-center gap-0.5"
-                                >
-                                    console.groq.com <ExternalLink size={10} />
-                                </a>
-                            </p>
-                        </div>
-                        <input
-                            type="password"
-                            value={groqApiKey}
-                            onChange={(e) => setGroqApiKey(e.target.value)}
-                            placeholder="gsk_..."
-                            className="w-full border rounded-(--radius) px-3 py-2.5 text-[13px] font-data text-(--text-primary) outline-none transition-colors"
-                            style={{ background: "var(--bg)", borderColor: "var(--border)" }}
-                        />
-                    </div>
-                </div>
-
-                {/* Step 2 — Job description */}
-                <div>
-                    <StepLabel n={2}>Job description</StepLabel>
+                    <StepLabel n={1}>Job description</StepLabel>
                     <JobDescriptionForm
                         mode={jdMode}
                         onModeChange={setJdMode}
@@ -165,13 +128,22 @@ export default function ScreeningSetup() {
                         freeText={freeTextJD}
                         onFreeTextChange={setFreeTextJD}
                         disabled={false}
-                        apiKey={groqApiKey}
+                        apiKey=""
                     />
                 </div>
 
-                {/* Step 3 — Choose path */}
                 <div>
-                    <StepLabel n={3}>Find candidates</StepLabel>
+                    <StepLabel n={2}>Find candidates</StepLabel>
+                    <div
+                        className="rounded-(--radius-lg) border p-4 mb-4"
+                        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+                    >
+                        <LocationInput value={searchLocations} onChange={setSearchLocations} />
+                        <p className="text-[11px] text-(--text-muted) mt-2">
+                            Used for &ldquo;Find candidates online&rdquo; only. Uploaded resumes are not filtered by location.
+                        </p>
+                    </div>
+
                     <div className="flex gap-4 flex-col sm:flex-row">
                         <PathCard
                             href="/screen"

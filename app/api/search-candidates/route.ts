@@ -1,12 +1,27 @@
 import { groqGenerate } from "@/lib/groq";
 import { NextRequest, NextResponse } from "next/server";
-import { normalizePDLCandidate, normalizeGitHubCandidate, normalizeWebCandidate } from "@/lib/normalizer/normalizeCandidate";
+import { normalizePDLCandidate, normalizeGitHubCandidate, normalizeWebCandidate, normalizeProfileUrl } from "@/lib/normalizer/normalizeCandidate";
 import { upsertCandidate } from "@/lib/dedup/upsertCandidate";
-import { buildSearchContextHash, filterByFreshness, recordSearchHistory } from "@/lib/searchHistory/freshness";
+import {
+  buildSearchContextHash,
+  filterByFreshness,
+  recordSearchHistory,
+  findRecentlySeenIdentityValues,
+  countSeenPdlCandidates,
+  FRESHNESS_WINDOW_MS,
+} from "@/lib/searchHistory/freshness";
+import { gatherUntil, type PageProcessed } from "@/lib/search/gatherUntil";
 import { db } from "@/lib/db";
 import { convertUsdToInr } from "@/lib/utils/currency";
 import { applyCandidateFilters, type CandidateFilters } from "@/lib/filters/applyCandidateFilters";
 import { withKeyFailover, getProviderKeys, getCentralGroqKeys, ProviderKeyError } from "@/lib/providerKeys";
+import { parseExperienceYears, parseEducation } from "@/lib/normalizer/parseProfileText";
+import { cleanLocations, expandLocation, expandLocations } from "@/lib/search/locations";
+import { isPlausiblePersonName, nameFromLinkedInUrl, UNKNOWN_NAME } from "@/lib/normalizer/validateName";
+
+// A search may fetch several pages (each a provider call + a Groq call + DB
+// writes), which can outlast the default serverless timeout on some hosts.
+export const maxDuration = 60;
 
 // ─── Shared types ──────────────────────────────────────────────────────────────
 export interface WebCandidate {
@@ -31,11 +46,15 @@ export interface WebCandidate {
   rawProvider?: unknown;       // raw PDL record / GitHub profile — feeds the normalizer
   confirmedSkills?: string[];  // GitHub only: matchedSkills confirmed via a language: query
   candidateId?: string;        // set after upsertCandidate() — the DB row this maps to
+  // True when the AI clean-up call failed (e.g. every Groq key was at its
+  // limit), so name/title/summary are the raw search-engine text. Such a
+  // profile is shown, but NOT recorded as "seen" and saved at low trust, so a
+  // later search retries it instead of leaving raw text behind for 30 days.
+  enrichmentFailed?: boolean;
 
-  // andidate information enhancements. Populated from the
+  // Candidate information enhancements. Populated from the
   // persisted Candidate row (post-merge), not just this one provider hit —
-  // see the enrichment block in POST(). Absent/empty = "Not Available" in
-  // the UI, not an error.
+  // see the enrichment block in POST().
   certifications?: {
     name: string;
     issuer?: string;
@@ -46,7 +65,7 @@ export interface WebCandidate {
     min?: number;
     max?: number;
     currency?: string;
-    minINR?: number;   // only set when currency is USD — rough conversion, see lib/utils/currency.ts
+    minINR?: number;   // only set when currency is USD
     maxINR?: number;
     source?: string;   // e.g. "PDL inferred_salary" — surface this in the UI so recruiters know it's an estimate
   } | null;
@@ -72,7 +91,7 @@ export interface CandidateSearchResponse {
     niceToHaveSkills: string[];
   };
   suppressedByFreshness?: number; // count of candidates hidden by the 30-day freshness rule
-  filteredOutByFilters?: number;  // count of candidates removed by recruiter-selected filters
+  filteredOutByFilters?: number;  // count of candidates removed by recruiter-selected filters (Phase 8)
 }
 
 
@@ -171,6 +190,36 @@ function scoreWebResult(
   const sourceBonus = source === "linkedin" ? 20 : source === "portfolio" ? 12 : source === "github" ? 8 : 4;
   const lengthBonus = snippetLength > 150 ? 5 : 0;
   return Math.min(99, Math.round(skillRatio * 65 + sourceBonus + lengthBonus));
+}
+
+function scoreWebCandidate(
+  c: WebCandidate, jobTitle: string,
+  mandatory: string[], must: string[], nice: string[],
+): number {
+  const have = new Set(c.matchedSkills.map(canonicalSkill));
+  const ratio = (list: string[], empty: number) =>
+    list.length ? list.filter((s) => have.has(canonicalSkill(s))).length / list.length : empty;
+
+  const headline = normalize(`${c.rawTitle ?? ""} ${c.title}`);
+  const padded = ` ${headline} `;
+  const all = getAllJDSkills(mandatory, must, nice);
+  // skills named in the headline = the person's core stack, not a passing mention
+  const prominence = all.length
+    ? all.filter((s) => aliasesFor(s).some((a) => padded.includes(` ${a} `))).length / all.length
+    : 0;
+
+  const titleWords = normalize(jobTitle).split(" ").filter((w) => w.length > 2);
+  const titleMatch = titleWords.length
+    ? titleWords.filter((w) => headline.includes(w)).length / titleWords.length
+    : 0.5;
+
+  const exp = c.experienceYears ? Math.min(5, c.experienceYears) : 2;
+  const sourceBonus = c.source === "linkedin" ? 5 : c.source === "portfolio" ? 3 : 1;
+
+  return Math.min(99, Math.round(
+    ratio(mandatory, 1) * 35 + ratio(must, 1) * 20 + ratio(nice, 0.5) * 5 +
+    prominence * 15 + titleMatch * 15 + exp + sourceBonus,
+  ));
 }
 
 // ─── Free-text JD extraction (Groq) ───────────────────────────────────────
@@ -299,7 +348,7 @@ function extractProfileSource(candidate: WebCandidate): string {
   return (stripped || raw).slice(0, 600);
 }
 
-async function enrichWebCandidatesWithGroq(
+async function enrichBatchWithGroq(
   candidates: WebCandidate[],
   allSkills: string[],
 ): Promise<WebCandidate[]> {
@@ -404,7 +453,7 @@ ${JSON.stringify(input, null, 2)}
       ...getCentralGroqKeys(),
       model: "openai/gpt-oss-120b",
       temperature: 0.1,
-      maxTokens: 5000,
+      maxTokens: 3000, // a batch is ENRICH_BATCH_SIZE candidates now, not a whole page
       reasoningFormat: "hidden",
       responseFormat: {
         type: "json_object",
@@ -414,7 +463,7 @@ ${JSON.stringify(input, null, 2)}
     const parsed = JSON.parse(raw);
 
     if (!Array.isArray(parsed?.candidates)) {
-      return candidates;
+      throw new Error("Groq returned an unexpected response shape (no candidates array)");
     }
 
     const enrichmentMap = new Map<number, EnrichedCandidate>();
@@ -516,7 +565,7 @@ ${JSON.stringify(input, null, 2)}
           ...candidate,
 
           name:
-            enriched.nameConfidence >= 0.65
+            enriched.nameConfidence >= 0.65 && isPlausiblePersonName(enriched.name)
               ? enriched.name
               : candidate.name,
 
@@ -527,7 +576,7 @@ ${JSON.stringify(input, null, 2)}
 
           location: enriched.location,
 
-          experienceYears: enriched.experienceYears,
+          experienceYears: candidate.experienceYears ?? enriched.experienceYears,
 
           matchedSkills,
 
@@ -538,13 +587,78 @@ ${JSON.stringify(input, null, 2)}
 
     return merged;
   } catch (error) {
-    console.error(
-      "Groq candidate enrichment failed:",
-      error instanceof Error ? error.message : error,
-    );
-
-    return candidates;
+    // Re-throw: the caller (enrichWebCandidatesWithGroq) decides what a failed
+    // batch means. Swallowing it here is what used to leave a whole page of raw
+    // profiles with no explanation.
+    throw error;
   }
+}
+
+// How many candidates go into ONE Groq request. A whole page (15) in a single
+// request is large (~9k tokens incl. the completion budget): a key on a smaller
+// plan rejects it outright (HTTP 413), and one bad response blanks every
+// profile on the page. Small batches fit lower per-minute limits, fail
+// independently, and each batch benefits from key failover on its own.
+const ENRICH_BATCH_SIZE = 5;
+
+interface EnrichmentResult {
+  candidates: WebCandidate[];
+  /** How many candidates could NOT be cleaned up and are still raw. */
+  failed: number;
+  /** Why (first failure), for the warning shown to the recruiter. */
+  error?: string;
+}
+
+async function enrichWebCandidatesWithGroq(
+  candidates: WebCandidate[],
+  allSkills: string[],
+): Promise<EnrichmentResult> {
+  if (!candidates.length || !getProviderKeys("groq").length) {
+    return { candidates, failed: 0 }; // enrichment is optional — degrade gracefully with no Groq key configured
+  }
+
+  const out: WebCandidate[] = [];
+  let failed = 0;
+  let firstError: string | undefined;
+  let giveUp = false;
+
+  for (let i = 0; i < candidates.length; i += ENRICH_BATCH_SIZE) {
+    const batch = candidates.slice(i, i + ENRICH_BATCH_SIZE);
+
+    if (giveUp) {
+      failed += batch.length;
+      out.push(...batch.map((c) => ({ ...c, enrichmentFailed: true })));
+      continue;
+    }
+
+    try {
+      out.push(...(await enrichBatchWithGroq(batch, allSkills)));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Groq candidate enrichment failed for a batch:", message);
+      firstError ??= message;
+      failed += batch.length;
+      out.push(...batch.map((c) => ({ ...c, enrichmentFailed: true })));
+
+      // Every key is rate-limited / out of quota: the remaining batches would
+      // fail identically, so don't hammer Groq — mark them and move on.
+      const status = (error as { status?: number })?.status;
+      if (status === 429 || status === 401 || status === 402 || status === 403) giveUp = true;
+    }
+  }
+
+  return { candidates: out, failed, error: firstError };
+}
+
+// One-line, human wording for the banner shown on the results page.
+function enrichmentWarning(result: EnrichmentResult): string | undefined {
+  if (result.failed === 0) return undefined;
+  const limited = /429|rate limit|daily limit|413|too large|All \d+ Groq key/i.test(result.error ?? "");
+  return (
+    `AI profile clean-up was unavailable for ${result.failed} candidate${result.failed === 1 ? "" : "s"}` +
+    `${limited ? " (Groq limit reached on every configured key)" : ""} — their names/titles may show raw profile text. ` +
+    `They'll be retried on the next search.`
+  );
 }
 
 
@@ -581,9 +695,22 @@ function buildPDLQuery(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
+  locations: string[] = [],
 ): string {
   const conditions: string[] = [];
   conditions.push(`location_country = 'india'`);
+
+  const locTerms = expandLocations(locations);
+  if (locTerms.length > 0) {
+    conditions.push(
+      `(${locTerms.map((l) => `location_name LIKE '%${l.replace(/'/g, "''")}%'`).join(" OR ")})`,
+    );
+  }
+  if (locTerms.length > 0) {
+    conditions.push(
+      `(${locTerms.map((l) => `location_name LIKE '%${l.replace(/'/g, "''")}%'`).join(" OR ")})`,
+    );
+  }
   if (jobTitle.trim()) {
     const cleanTitle = jobTitle.toLowerCase()
       .replace(/\b(senior|sr|junior|jr|lead|staff|principal|associate|mid|entry)\b/g, "")
@@ -699,8 +826,18 @@ async function searchPDL(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-): Promise<{ candidates: WebCandidate[]; totalFound: number; creditsUsed: number }> {
-  const sql = buildPDLQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills);
+  // startOffset = how many PDL records were already shown for this search, so
+  // this call resumes after them instead of re-buying the same top records.
+  ctx: { page: number; startOffset: number, locations?: string[] } = { page: 0, startOffset: 0 },
+): Promise<PageFetchResult> {
+  const sql = buildPDLQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, ctx.locations ?? []);
+
+  // PDL's `from` offset (documented as legacy but supported) must satisfy
+  // from + size < 10,000. Past that there is nothing more we can page to.
+  const from = ctx.startOffset + ctx.page * PDL_PAGE_SIZE;
+  if (from + PDL_PAGE_SIZE >= 10_000) {
+    return { candidates: [], totalFound: 0, creditsUsed: 0, exhausted: true };
+  }
 
   // PDL bills per record returned, so its pool stays at 5 per call (unlike
   // the 15 used for the web/GitHub providers). 401/402/403 here mean a bad
@@ -714,11 +851,19 @@ async function searchPDL(
       },
       body: JSON.stringify({
         sql,
-        size: 5,
+        size: PDL_PAGE_SIZE,
+        ...(from > 0 ? { from } : {}),
         titlecase: true,
         dataset: "resume",
       }),
     });
+
+    // PDL answers "no records match" (or "offset is past the end") with HTTP
+    // 404, not an empty 200. That is a normal empty page, not a failure —
+    // treating it as an error made a legitimately empty search look broken.
+    if (res.status === 404) {
+      return { data: [], total: 0 };
+    }
 
     if (!res.ok) {
       const text = await res.text();
@@ -778,6 +923,7 @@ async function searchPDL(
     candidates: candidates.sort((a, b) => b.relevanceScore - a.relevanceScore),
     totalFound,
     creditsUsed: records.length,
+    exhausted: records.length < PDL_PAGE_SIZE, // a short page means we reached the end
   };
 }
 
@@ -823,12 +969,27 @@ function isUsefulWebResult(url: string, title: string, snippet: string): boolean
 }
 
 const NAME_RE = /^([A-Z][a-zÀ-ÿ'-]+(?:\s+[A-Z][a-zÀ-ÿ'-]+){1,3})\s*[-–|·]/;
-function extractName(title: string, snippet: string): string {
-  const m = title.match(NAME_RE);
-  if (m) return m[1];
-  const lines = snippet.split("\n");
-  if (lines[0] && /^[A-Z][a-z]+ [A-Z][a-z]/.test(lines[0].trim())) return lines[0].trim().slice(0, 50);
-  return title.split("|")[0].split("-")[0].trim().slice(0, 50) || "Candidate";
+const PERSON_SEGMENT_RE = /^[A-Z][a-zÀ-ÿ'.-]+(?:\s+[A-Z][a-zÀ-ÿ'.-]+){1,3}$/;
+
+function extractName(title: string, snippet: string, url = ""): string {
+  // "Rahul Sharma Resume - Pune" -> "Rahul Sharma  - Pune"
+  const cleanTitle = title.replace(/\b(resume|curriculum vitae|cv|profile|portfolio)\b/gi, " ").replace(/\s+/g, " ").trim();
+
+  const m = cleanTitle.match(NAME_RE);
+  if (m && isPlausiblePersonName(m[1])) return m[1];
+
+  // Try each segment of the title: "Resume | Rahul Sharma | Pune"
+  for (const part of cleanTitle.split(/\s*[|\-–—·•,]\s*/)) {
+    const p = part.replace(/\(.*?\)/g, "").trim();
+    if (PERSON_SEGMENT_RE.test(p) && isPlausiblePersonName(p)) return p;
+  }
+
+  const firstLine = snippet.split("\n")[0]?.trim() ?? "";
+  if (/^[A-Z][a-z]+ [A-Z][a-z]/.test(firstLine) && isPlausiblePersonName(firstLine.slice(0, 50))) {
+    return firstLine.slice(0, 50);
+  }
+
+  return nameFromLinkedInUrl(url) ?? UNKNOWN_NAME;
 }
 
 function extractLocation(snippet: string): string | undefined {
@@ -844,8 +1005,8 @@ function webResultToCandidate(
   const matchedSkills = sanitizeToAllowedSkills(matchSkillsInText(combined, allSkills), allSkills);
   const missingSkills = allSkills.filter((s) => !matchedSkills.includes(canonicalSkill(s)));
   return {
-    id: `web-${i + 1}`,
-    name: extractName(r.title, r.snippet),
+    id: `web-${normalizeProfileUrl(r.url) || i + 1}`, // stable per profile; index-based ids collided across pages
+    name: extractName(r.title, r.snippet, r.url),
     title: r.title.split("-")[1]?.split("|")[0]?.trim() ?? "Professional",
     company: "",
     url: r.url,
@@ -857,15 +1018,17 @@ function webResultToCandidate(
     missingSkills,
     relevanceScore: scoreWebResult(matchedSkills, allSkills, source, r.snippet.length),
     location: extractLocation(r.snippet),
+    experienceYears: parseExperienceYears(r.snippet),
+    education: parseEducation(r.snippet),
     provider: provider as "tavily" | "exa" | "serper",
   };
 }
 
-async function searchTavily(query: string, apiKey: string): Promise<RawResult[]> {
+async function searchTavily(query: string, apiKey: string, geoBias = true): Promise<RawResult[]> {
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: apiKey, query: `${query} (India OR Bangalore OR Hyderabad OR Pune)`, search_depth: "advanced", max_results: WEB_SEARCH_POOL_SIZE, include_raw_content: true }),
+    body: JSON.stringify({ api_key: apiKey, query: geoBias ? `${query} (India OR Bangalore OR Hyderabad OR Pune)` : query, search_depth: "advanced", max_results: WEB_SEARCH_POOL_SIZE, include_raw_content: true }),
   });
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "");
@@ -880,11 +1043,11 @@ async function searchTavily(query: string, apiKey: string): Promise<RawResult[]>
   }));
 }
 
-async function searchExa(query: string, apiKey: string): Promise<RawResult[]> {
+async function searchExa(query: string, apiKey: string, geoBias = true): Promise<RawResult[]> {
   const res = await fetch("https://api.exa.ai/search", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-    body: JSON.stringify({ query: `${query} India`, numResults: WEB_SEARCH_POOL_SIZE, type: "keyword", contents: { text: { maxCharacters: 400 } } }),
+    body: JSON.stringify({ query: geoBias ? `${query} India` : query, numResults: WEB_SEARCH_POOL_SIZE, type: "keyword", contents: { text: { maxCharacters: 400 } } }),
   });
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "");
@@ -899,20 +1062,33 @@ async function searchExa(query: string, apiKey: string): Promise<RawResult[]> {
   }));
 }
 
-async function searchSerper(query: string, apiKey: string): Promise<RawResult[]> {
-  const res = await fetch("https://google.serper.dev/search", {
-    method: "POST",
-    headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      q: query,
-      num: WEB_SEARCH_POOL_SIZE,
-      gl: "in",
-      hl: "en",
-      location: "India"
-    }),
-  });
+// Serper's free plan rejects some patterns (grouped OR with parentheses).
+// Google's OR already binds tighter than the implicit AND, so parentheses add nothing.
+function simplifyForSerper(q: string): string {
+  return q.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+async function searchSerper(query: string, apiKey: string, _geoBias = true): Promise<RawResult[]> {
+  const call = (q: string) =>
+    fetch("https://google.serper.dev/search", {
+      method: "POST",
+      headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ q, num: WEB_SEARCH_POOL_SIZE, gl: "in", hl: "en", location: "India" }),
+    });
+
+  const simple = simplifyForSerper(query);
+  let res = await call(simple);
+
+  // Still rejected: retry once without the exclusion operators and quotes.
+  if (res.status === 400) {
+    const plain = simple.replace(/\s-\w+/g, "").replace(/"/g, "").trim();
+    console.warn(`Serper rejected query, retrying simplified: ${simple} -> ${plain}`);
+    res = await call(plain);
+  }
+
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "");
+    console.warn(`Serper failed for query: ${simple}`);
     throw new ProviderKeyError(
       `Serper error ${res.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ""}`,
       res.status,
@@ -923,18 +1099,140 @@ async function searchSerper(query: string, apiKey: string): Promise<RawResult[]>
     title: r.title ?? "", url: r.link ?? "", snippet: r.snippet ?? "",
   }));
 }
-
 const DEFAULT_LOCATION = "India";
-// How many candidates actually get shown/recorded-as-seen per search, once
-// the wider provider pools have been through freshness + recruiter filters.
-const DISPLAY_LIMIT = 10;
-// Per-provider pool size, per query — kept above DISPLAY_LIMIT so freshness
-// has somewhere to fall back to on a repeat search, but reined in from the
-// earlier 25 to control cost (more results = more Groq enrichment tokens
-// and more DB upserts per search). PDL is handled separately at its own
-// (credit-billed) size: 5.
+
+// How many NEW candidates a search tries to return, per provider. A search
+// keeps fetching deeper pages (up to MAX_PAGES) until it has this many
+// candidates that are unseen AND pass the recruiter's filters.
+//   pdl: 5  — PDL bills per record, so keep it small
+//   db : 10 — one "virtualized" page of the saved-candidate DB at a time
+const DISPLAY_TARGET: Record<Provider, number> = {
+  pdl: 5,
+  github: 15,
+  tavily: 15,
+  exa: 15,
+  serper: 15,
+  db: 10,
+};
+
+// Hard cap on pages per search — bounds cost/latency (every page is a
+// provider call, a Groq call and DB writes). Raise with care: PDL pages cost
+// real credits, and unauthenticated GitHub only allows 10 searches/minute.
+const MAX_PAGES: Record<Provider, number> = {
+  pdl: 3,
+  github: 3,
+  tavily: 4,
+  exa: 4,
+  serper: 4,
+  db: 5,
+};
+
+// Per-page pool sizes (candidates requested per provider call).
 const WEB_SEARCH_POOL_SIZE = 15;
 const GITHUB_POOL_SIZE = 15;
+const PDL_PAGE_SIZE = 5;
+const DB_RANK_CAP = 5000; // rows ranked per DB search (id/skills only — cheap)
+
+// What a single provider page hands back to the paging loop.
+interface PageFetchResult {
+  candidates: WebCandidate[];
+  totalFound: number;
+  creditsUsed?: number;
+  warning?: string;
+  /** Dropped BEFORE enrichment because already shown in this context — counted as "hidden as recently seen". */
+  skippedAsSeen?: number;
+  /** Provider has nothing further for this query. */
+  exhausted?: boolean;
+}
+
+// Web providers have no offset parameter, so page N>0 searches a different
+// slice of the market (one city group per page) instead of repeating page 0.
+const CITY_GROUPS: string[][] = [
+  ["Bengaluru", "Bangalore"],
+  ["Hyderabad"],
+  ["Pune"],
+  ["Chennai"],
+  ["Mumbai"],
+  ["Delhi", "Noida", "Gurgaon", "Gurugram"],
+  ["Kolkata"],
+  ["Ahmedabad"],
+];
+const WEB_QUERY_VARIANTS = 3;
+
+function buildWebQueries(page: number, jobTitle: string, skills: string, locations: string[]): string[] {
+  if (locations.length === 0) {
+    // unchanged default behaviour (country-wide, then city groups)
+    if (page === 0) {
+      return [
+        `site:linkedin.com/in ${jobTitle} ${skills} "${DEFAULT_LOCATION}"`,
+        `site:linkedin.com/in ${jobTitle} ${skills} Bengaluru OR Bangalore OR Hyderabad OR Pune OR Chennai OR Mumbai OR Delhi`,
+        `${jobTitle} resume OR portfolio ${skills} "${DEFAULT_LOCATION}" -jobs -hiring`,
+      ];
+    }
+    const cities = CITY_GROUPS[(page - 1) % CITY_GROUPS.length];
+    const cityExpr = cities.map((c) => `"${c}"`).join(" OR ");
+    return [
+      `site:linkedin.com/in ${jobTitle} ${skills} (${cityExpr})`,
+      `${jobTitle} ${skills} (${cityExpr}) resume OR portfolio -jobs -hiring`,
+    ];
+  }
+
+  const loc = locations[page % locations.length];
+  const variant = Math.floor(page / locations.length) % WEB_QUERY_VARIANTS;
+  const locExpr = `(${expandLocation(loc).map((l) => `"${l}"`).join(" OR ")})`;
+
+  if (variant === 0) {
+    return [
+      `site:linkedin.com/in ${jobTitle} ${skills} ${locExpr}`,
+      `${jobTitle} resume OR portfolio ${skills} ${locExpr} -jobs -hiring`,
+    ];
+  }
+  if (variant === 1) {
+    return [
+      `site:linkedin.com/in ${skills} ${locExpr} developer OR engineer`,
+      `${skills} ${locExpr} profile -jobs -hiring`,
+    ];
+  }
+  return [
+    `site:linkedin.com/in ${jobTitle} ${locExpr}`,
+    `${skills} ${locExpr} resume OR cv -jobs -hiring`,
+  ];
+}
+// Of these raw web results, drop the ones whose profile was already shown for
+// this search context — BEFORE paying for Groq enrichment. Fails open: if the
+// lookup errors, everything is kept and the later freshness check still applies.
+async function dropSeenWebResults(
+  results: RawResult[],
+  seenContext: string | undefined,
+): Promise<{ kept: RawResult[]; skipped: number }> {
+  if (!seenContext || results.length === 0) return { kept: results, skipped: 0 };
+  try {
+    const typeOf = (url: string) => {
+      const src = detectSource(url);
+      return src === "linkedin" ? "LINKEDIN_URL" : src === "github" ? "GITHUB_URL" : src === "portfolio" ? "PORTFOLIO_URL" : null;
+    };
+    const byType = new Map<"LINKEDIN_URL" | "GITHUB_URL" | "PORTFOLIO_URL", string[]>();
+    for (const r of results) {
+      const t = typeOf(r.url);
+      if (!t) continue;
+      byType.set(t, [...(byType.get(t) ?? []), normalizeProfileUrl(r.url)]);
+    }
+    const seen = new Map<string, Set<string>>();
+    await Promise.all(
+      [...byType.entries()].map(async ([t, values]) => {
+        seen.set(t, await findRecentlySeenIdentityValues(t, [...new Set(values)], seenContext));
+      }),
+    );
+    const kept = results.filter((r) => {
+      const t = typeOf(r.url);
+      return !(t && seen.get(t)?.has(normalizeProfileUrl(r.url)));
+    });
+    return { kept, skipped: results.length - kept.length };
+  } catch (error) {
+    console.warn("Seen-profile pre-check failed, continuing without it:", error instanceof Error ? error.message : error);
+    return { kept: results, skipped: 0 };
+  }
+}
 
 async function runWebSearch(
   provider: "tavily" | "exa" | "serper",
@@ -942,64 +1240,57 @@ async function runWebSearch(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-  location: string = DEFAULT_LOCATION,
-): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
-  const providerName = provider; // "tavily" | "exa" | "serper" — same as KeyedProvider
+  ctx: { page: number; seenContext?: string; locations?: string[] },
+): Promise<PageFetchResult> {
+  const locations = ctx.locations ?? [];
+  const geoBias = locations.length === 0;
   const skills = [...new Set([...mandatorySkills, ...mustHaveSkills])].slice(0, 4).join(" ");
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
-  // jobTitle is deliberately NOT quoted (no exact-phrase match). Quoting it
-  // forces Google to find that literal string verbatim in a profile, which
-  // is brittle two ways: a typo in the recruiter's title zeroes out the
-  // query entirely, and even a correctly-spelled title rarely appears
-  // word-for-word in a real profile (a "Python Developer" search won't
-  // phrase-match "Senior Python Developer"). Unquoted, Google treats it as
-  // keywords instead — much more forgiving, and skills still carry the
-  // real matching weight downstream via matchSkillsInText/scoring.
-  const queries = [
-    `site:linkedin.com/in ${jobTitle} ${skills} "${location}"`,
-    `site:linkedin.com/in ${jobTitle} ${skills} Bengaluru OR Bangalore OR Hyderabad OR Pune OR Chennai OR Mumbai OR Delhi`,
-    `${jobTitle} resume OR portfolio ${skills} "${location}" -jobs -hiring`,
-  ];
-
+  const queries = buildWebQueries(ctx.page, jobTitle, skills, locations);
   const run = provider === "tavily" ? searchTavily : provider === "exa" ? searchExa : searchSerper;
 
-  const { merged, totalFound } = await withKeyFailover(providerName, async (apiKey) => {
-    const settled = await Promise.allSettled(queries.map((q) => run(q, apiKey)));
-    const anySuccess = settled.some((r) => r.status === "fulfilled");
-    if (!anySuccess) {
-      // Re-throw the first rejection so withKeyFailover can see its status
+  const merged = await withKeyFailover(provider, async (apiKey) => {
+    const settled = await Promise.allSettled(queries.map((q) => run(q, apiKey, geoBias)));
+    if (!settled.some((r) => r.status === "fulfilled")) {
+      // Re-throw the first rejection so withKeyFailover can read its status
       // and decide whether to fail over to the next key.
       const err = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
       throw err?.reason ?? new Error("Search failed");
     }
-
     const seen = new Set<string>();
-    const mergedResults: RawResult[] = [];
+    const out: RawResult[] = [];
     for (const r of settled) {
-      if (r.status === "fulfilled") {
-        for (const item of r.value) {
-          if (item.url && !seen.has(item.url)) { seen.add(item.url); mergedResults.push(item); }
-        }
+      if (r.status !== "fulfilled") continue;
+      for (const item of r.value) {
+        if (item.url && !seen.has(item.url)) { seen.add(item.url); out.push(item); }
       }
     }
-    return { merged: mergedResults, totalFound: mergedResults.length };
+    return out;
   });
 
-  let candidates = merged
-    .filter((r) => isUsefulWebResult(r.url, r.title, r.snippet))
-    .map((r, i) => webResultToCandidate(r, i, allSkills, provider))
+  const useful = merged.filter((r) => isUsefulWebResult(r.url, r.title, r.snippet));
+  // Drop people already shown BEFORE enrichment, so a repeat search spends
+  // Groq tokens only on candidates it can actually show.
+  const { kept, skipped } = await dropSeenWebResults(useful, ctx.seenContext);
+  const rescore = (c: WebCandidate) => ({
+    ...c,
+    relevanceScore: scoreWebCandidate(c, jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills),
+  });
+
+  let candidates = kept
+    .map((r, i) => rescore(webResultToCandidate(r, i, allSkills, provider)))
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
     .slice(0, WEB_SEARCH_POOL_SIZE);
 
+  let warning: string | undefined;
   if (getProviderKeys("groq").length > 0) {
-    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills);
+    const enriched = await enrichWebCandidatesWithGroq(candidates, allSkills);
+    candidates = enriched.candidates.map(rescore);
+    warning = enrichmentWarning(enriched);
   }
 
-  return {
-    candidates,
-    totalFound,
-  };
+  return { candidates, totalFound: merged.length, skippedAsSeen: skipped, warning, exhausted: locations.length > 0 && ctx.page + 1 >= locations.length * WEB_QUERY_VARIANTS, };
 }
 
 // ─── GitHub: dynamic query planning via Groq ───────────────────────────────
@@ -1189,22 +1480,28 @@ async function fetchGitHubJSON(
 // when tokens are configured, and falls back to GitHub's unauthenticated
 // (60/hr) mode when none are — so GitHub search still works out of the box
 // on a fresh deployment, unlike PDL/Tavily/Exa/Serper which hard-require keys.
+// `plan` is computed ONCE per request by the caller (it costs a Groq call) and
+// reused for every page, instead of re-planning on each page.
+interface GitHubPageContext {
+  page: number;
+  seenContext?: string;
+  plan: GitHubQueryPlan;
+  locations?: string[];
+}
+
 async function searchGitHubAPI(
   jobTitle: string,
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
+  ctx: GitHubPageContext,
   location: string = DEFAULT_LOCATION,
-): Promise<{
-  candidates: WebCandidate[];
-  totalFound: number;
-  warning?: string;
-}> {
+): Promise<PageFetchResult> {
   if (getProviderKeys("github").length === 0) {
-    return runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, "", location);
+    return runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, "", ctx, location);
   }
   return withKeyFailover("github", (key) =>
-    runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, key, location),
+    runGitHubSearch(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills, key, ctx, location),
   );
 }
 
@@ -1214,19 +1511,19 @@ async function runGitHubSearch(
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
   apiKey: string, // empty string = unauthenticated
+  ctx: GitHubPageContext,
   location: string = DEFAULT_LOCATION,
-): Promise<{
-  candidates: WebCandidate[];
-  totalFound: number;
-  warning?: string;
-}> {
+): Promise<PageFetchResult> {
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
 
   if (!getProviderKeys("groq").length) {
     throw new Error("GitHub search needs a Groq API key configured on the server (GROQ_API_KEYS) — it's used to translate the JD into an effective query and to clean up results.");
   }
 
-  const plan = await planGitHubQuery(jobTitle, mandatorySkills, mustHaveSkills, niceToHaveSkills);
+  const plan = ctx.plan;
+  const locs = ctx.locations?.length ? ctx.locations : [location];
+  const loc = locs[ctx.page % locs.length];
+  const ghPage = Math.floor(ctx.page / locs.length) + 1; // GitHub API page number
 
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -1256,7 +1553,7 @@ async function runGitHubSearch(
   const settled = await Promise.allSettled(
     variants.map((v) =>
       fetchGitHubJSON(
-        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=${GITHUB_POOL_SIZE}&sort=repositories&order=desc`,
+        `https://api.github.com/search/users?q=${encodeURIComponent(v.q)}&per_page=${GITHUB_POOL_SIZE}&page=${ghPage} &sort=repositories&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1273,7 +1570,7 @@ async function runGitHubSearch(
   );
 
   let fallbackSettled: typeof settled = [];
-  if (!anySuccessWithItems) {
+  if (!anySuccessWithItems && ctx.page === 0) {
     const primary = plan.languages[0];
     const fallbackQ = primary
       ? `type:user location:"${location}" language:${primary.language}`
@@ -1282,7 +1579,7 @@ async function runGitHubSearch(
       fetchGitHubJSON(
         `https://api.github.com/search/users?q=${encodeURIComponent(
           fallbackQ
-        )}&per_page=${GITHUB_POOL_SIZE}&sort=followers&order=desc`,
+        )}&per_page=${GITHUB_POOL_SIZE}&page=${ctx.page + 1}&sort=followers&order=desc`,
         headers,
       ).then((result) => ({
         data: result.data,
@@ -1322,22 +1619,56 @@ async function runGitHubSearch(
 
   let totalFound = 0;
   const loginToConfirmedSkills = new Map<string, Set<string>>();
-  const items: GitHubUserSearchItem[] = [];
-  const seen = new Set<string>();
+  const perVariant: GitHubUserSearchItem[][] = [];
 
   for (const r of allSettled) {
     if (r.status !== "fulfilled") continue;
     totalFound += r.value.data.total_count ?? 0;
-    for (const item of r.value.data.items ?? []) {
-      if (!seen.has(item.login)) { seen.add(item.login); items.push(item); }
+    const list: GitHubUserSearchItem[] = r.value.data.items ?? [];
+    perVariant.push(list);
+    for (const item of list) {
       const set = loginToConfirmedSkills.get(item.login) ?? new Set<string>();
       r.value.confirmedSkills.forEach((s: string) => set.add(canonicalSkill(s)));
       loginToConfirmedSkills.set(item.login, set);
     }
   }
 
+  // Round-robin across the query variants. Concatenating them meant the first
+  // variant (15 results) filled the entire pool and every other variant's
+  // API call was wasted.
+  const items: GitHubUserSearchItem[] = [];
+  const seenLogins = new Set<string>();
+  const longest = Math.max(0, ...perVariant.map((l) => l.length));
+  for (let i = 0; i < longest; i++) {
+    for (const list of perVariant) {
+      const item = list[i];
+      if (item && !seenLogins.has(item.login)) { seenLogins.add(item.login); items.push(item); }
+    }
+  }
+
+  // No results at all on this page = GitHub has nothing deeper for this query.
+  const exhausted = items.length === 0 && ctx.page >= locs.length - 1;
+
+  // Skip people already shown for this context BEFORE spending a profile
+  // fetch (GitHub core API quota) and a Groq enrichment slot on them.
+  let unseenItems = items;
+  let skippedAsSeen = 0;
+  if (ctx.seenContext && items.length > 0) {
+    try {
+      const alreadySeen = await findRecentlySeenIdentityValues(
+        "GITHUB_LOGIN",
+        items.map((i) => i.login.toLowerCase()),
+        ctx.seenContext,
+      );
+      unseenItems = items.filter((i) => !alreadySeen.has(i.login.toLowerCase()));
+      skippedAsSeen = items.length - unseenItems.length;
+    } catch (error) {
+      console.warn("GitHub seen-login pre-check failed, continuing without it:", error instanceof Error ? error.message : error);
+    }
+  }
+
   const profileSettled = await Promise.allSettled(
-    items.slice(0, GITHUB_POOL_SIZE).map((item) =>
+    unseenItems.slice(0, GITHUB_POOL_SIZE).map((item) =>
       fetchGitHubJSON(
         `https://api.github.com/users/${item.login}`,
         headers,
@@ -1392,19 +1723,24 @@ async function runGitHubSearch(
   // limit afterward. Slicing here would mean a repeat search has nothing
   // left to fall back on once the top 10 get suppressed as "already seen".
 
+  let enrichWarn: string | undefined;
   if (getProviderKeys("groq").length > 0) {
-    candidates = await enrichWebCandidatesWithGroq(candidates, allSkills);
+    const enriched = await enrichWebCandidatesWithGroq(candidates, allSkills);
+    candidates = enriched.candidates;
+    enrichWarn = enrichmentWarning(enriched);
   }
 
   return {
     candidates,
     totalFound,
-    warning: githubWarning,
+    warning: [githubWarning, enrichWarn].filter(Boolean).join(" · ") || undefined,
+    skippedAsSeen,
+    exhausted,
   };
 
 }
 
-// ─── Internal DB search ──────────────────────────────────────────────
+// ─── Internal DB search (Phase 7) ──────────────────────────────────────────────
 // The candidate DB behaves like just another provider: same skill matching,
 // same scoring shape (reuses the PDL weighting — mandatory/must/nice/title/
 // experience), same response shape. No API key, no Groq call needed — the
@@ -1414,114 +1750,211 @@ async function searchInternalDB(
   mandatorySkills: string[],
   mustHaveSkills: string[],
   niceToHaveSkills: string[],
-  pagination: { skip?: number; take?: number } = {},
-): Promise<{ candidates: WebCandidate[]; totalFound: number }> {
+  ctx: { page: number; seenContext?: string; excludeIds?: string[]; locations?: string[] },
+): Promise<PageFetchResult> {
   const allSkills = getAllJDSkills(mandatorySkills, mustHaveSkills, niceToHaveSkills);
   const canonMandatory = mandatorySkills.map(canonicalSkill);
   const canonMust = mustHaveSkills.map(canonicalSkill);
   const canonNice = niceToHaveSkills.map(canonicalSkill);
+  const titleWords = normalize(jobTitle).split(" ").filter((w) => w.length > 2);
 
-  // "Virtualized" fetching: load one bounded page at a time instead of
-  // scanning a fixed 200 rows on every call, so cost stays flat as the
-  // candidate DB grows. Default page = 15 (same pool size as the web/GitHub
-  // providers); callers can pass dbSkip to page further on repeat searches.
-  const take = Math.min(Math.max(pagination.take ?? 15, 1), 50);
-  const skip = Math.max(pagination.skip ?? 0, 0);
-
-  const skillWhere = allSkills.length > 0 ? { skills: { some: { skill: { in: allSkills } } } } : undefined;
-
-  // Broad net at the DB level (any matching skill, or everyone if no skills
-  // given) — precise tiered scoring happens in JS below, same as every
-  // other provider's scoring function in this file.
-  const [rows, totalMatching] = await Promise.all([
-    db.candidate.findMany({
-      where: skillWhere,
-      include: { skills: true, certifications: true, identities: true },
-      take,
-      skip,
-      orderBy: { lastSeenAt: "desc" },
-    }),
-    db.candidate.count({ where: skillWhere }),
-  ]);
-
-  const reqTitle = normalize(jobTitle);
-  const titleWords = reqTitle.split(" ").filter((w) => w.length > 2);
-
-  const scored: WebCandidate[] = rows.map((c) => {
-    const candidateSkillSet = new Set(c.skills.map((s) => s.skill));
-    const matchedSkills = allSkills.filter((s) => candidateSkillSet.has(s));
-    const missingSkills = allSkills.filter((s) => !candidateSkillSet.has(s));
-
-    const matchMandatory = canonMandatory.filter((s) => candidateSkillSet.has(s));
-    const matchMust = canonMust.filter((s) => candidateSkillSet.has(s));
-    const matchNice = canonNice.filter((s) => candidateSkillSet.has(s));
-
-    const mandRatio = canonMandatory.length > 0 ? matchMandatory.length / canonMandatory.length : 1;
-    const mustRatio = canonMust.length > 0 ? matchMust.length / canonMust.length : 0.5;
-    const niceRatio = canonNice.length > 0 ? matchNice.length / canonNice.length : 1;
-
-    const candTitle = normalize(c.currentTitle ?? "");
+  // Same weighting as the PDL scorer — mandatory 40 / must 25 / nice 10 /
+  // title 15 / experience up to 10 — used for BOTH ranking and the final card.
+  const scoreCandidate = (skillSet: Set<string>, title: string | null, years: number | null): number => {
+    const ratio = (list: string[], emptyValue: number) =>
+      list.length > 0 ? list.filter((s) => skillSet.has(s)).length / list.length : emptyValue;
+    const candTitle = normalize(title ?? "");
     const titleMatch = titleWords.length > 0
       ? titleWords.filter((w) => candTitle.includes(w)).length / titleWords.length
       : 0.5;
-
-    const score = Math.min(99, Math.round(
-      mandRatio * 40 + mustRatio * 25 + niceRatio * 10 + titleMatch * 15 +
-      (c.experienceYears ? Math.min(10, c.experienceYears / 2) : 5),
+    return Math.min(99, Math.round(
+      ratio(canonMandatory, 1) * 40 + ratio(canonMust, 0.5) * 25 + ratio(canonNice, 1) * 10 + titleMatch * 15 +
+      (years ? Math.min(10, years / 2) : 5),
     ));
+  };
 
-    const linkedinIdentity = c.identities.find((i) => i.type === "LINKEDIN_URL");
-    const githubIdentity = c.identities.find((i) => i.type === "GITHUB_URL");
-    const portfolioIdentity = c.identities.find((i) => i.type === "PORTFOLIO_URL");
-    const bestIdentity = linkedinIdentity ?? githubIdentity ?? portfolioIdentity;
-    const url = bestIdentity ? `https://${bestIdentity.value}` : "";
-    const currency = c.estimatedSalaryCurrency ?? "USD";
+  const take = DISPLAY_TARGET.db;
+  const cutoff = new Date(Date.now() - FRESHNESS_WINDOW_MS);
+  const skillWhere = allSkills.length > 0 ? { skills: { some: { skill: { in: allSkills } } } } : {};
+  const excludeWhere = ctx.excludeIds?.length ? { NOT: { id: { in: ctx.excludeIds } } } : {};
+  const locs = expandLocations(ctx.locations ?? []);
+  const locationWhere = locs.length
+    ? { OR: locs.map((l) => ({ location: { contains: l, mode: "insensitive" as const } })) }
+    : {};
+  const baseWhere = { AND: [skillWhere, excludeWhere, locationWhere] };
 
-    return {
-      id: `db-${c.id}`,
-      name: c.fullName,
-      title: c.currentTitle ?? "Professional",
-      company: c.currentCompany ?? "",
-      url,
-      source: linkedinIdentity ? "linkedin" : githubIdentity ? "github" : portfolioIdentity ? "portfolio" : "other",
-      snippet: c.summary ?? "",
-      matchedSkills,
-      missingSkills,
-      relevanceScore: score,
-      location: c.location ?? undefined,
-      experienceYears: c.experienceYears ?? undefined,
-      education: c.educationLevel ?? undefined,
-      candidateId: c.id, // already a DB row — skip re-normalize/upsert (see POST handler)
-      certifications: c.certifications.map((cert) => ({
-        name: cert.name,
-        issuer: cert.issuer ?? undefined,
-        source: cert.source,
-        confidence: cert.confidence ?? undefined,
-      })),
-      estimatedSalary: (c.estimatedSalaryMin != null || c.estimatedSalaryMax != null)
-        ? {
-          min: c.estimatedSalaryMin ?? undefined,
-          max: c.estimatedSalaryMax ?? undefined,
-          currency,
-          minINR: currency === "USD" && c.estimatedSalaryMin != null ? convertUsdToInr(c.estimatedSalaryMin) : undefined,
-          maxINR: currency === "USD" && c.estimatedSalaryMax != null ? convertUsdToInr(c.estimatedSalaryMax) : undefined,
-          source: c.salarySource ?? undefined,
-        }
-        : null,
-      openToWork: {
-        status: c.openToWork,
-        evidence: c.openToWorkEvidence ?? undefined,
-        source: c.openToWorkSource ?? undefined,
-      },
-      provider: "db",
-    };
+  const seenWhere = ctx.seenContext
+    ? { searchHistory: { some: { searchContextHash: ctx.seenContext, lastSeenAt: { gte: cutoff } } } }
+    : null;
+
+  const [light, hiddenAsSeen] = await Promise.all([
+    db.candidate.findMany({
+      where: seenWhere ? { AND: [baseWhere, { NOT: seenWhere }] } : baseWhere,
+      select: { id: true, currentTitle: true, experienceYears: true, skills: { select: { skill: true } } },
+      orderBy: { lastSeenAt: "desc" },
+      take: DB_RANK_CAP,
+    }),
+    seenWhere && ctx.page === 0
+      ? db.candidate.count({ where: { AND: [baseWhere, seenWhere] } })
+      : Promise.resolve(0),
+  ]);
+
+  const ranked = light
+    .map((c) => ({ id: c.id, score: scoreCandidate(new Set(c.skills.map((s) => s.skill)), c.currentTitle, c.experienceYears) }))
+    .sort((a, b) => b.score - a.score);
+
+  const pageIds = ranked.slice(ctx.page * take, (ctx.page + 1) * take).map((r) => r.id);
+  const exhausted = (ctx.page + 1) * take >= ranked.length;
+  if (pageIds.length === 0) {
+    return { candidates: [], totalFound: ranked.length + hiddenAsSeen, skippedAsSeen: hiddenAsSeen, exhausted: true };
+  }
+
+  const hydrated = await db.candidate.findMany({
+    where: { id: { in: pageIds } },
+    include: { skills: true, certifications: true, identities: true },
   });
+  const byId = new Map(hydrated.map((c) => [c.id, c]));
 
-  const sorted = scored.sort((a, b) => b.relevanceScore - a.relevanceScore);
-  // No slice here — same reasoning as GitHub/web-search above. The `take: 200`
-  // on the query above is the real cap; POST() slices to the display limit
-  // after freshness filtering.
-  return { candidates: sorted, totalFound: totalMatching };
+  const candidates: WebCandidate[] = pageIds
+    .map((id) => byId.get(id))
+    .filter((c): c is NonNullable<typeof c> => Boolean(c))
+    .map((c) => {
+      const candidateSkillSet = new Set(c.skills.map((s) => s.skill));
+      const matchedSkills = allSkills.filter((s) => candidateSkillSet.has(s));
+      const missingSkills = allSkills.filter((s) => !candidateSkillSet.has(s));
+
+      const linkedinIdentity = c.identities.find((i) => i.type === "LINKEDIN_URL");
+      const githubIdentity = c.identities.find((i) => i.type === "GITHUB_URL");
+      const portfolioIdentity = c.identities.find((i) => i.type === "PORTFOLIO_URL");
+      const bestIdentity = linkedinIdentity ?? githubIdentity ?? portfolioIdentity;
+      const url = bestIdentity ? `https://${bestIdentity.value}` : "";
+      const currency = c.estimatedSalaryCurrency ?? "USD";
+
+      return {
+        id: `db-${c.id}`,
+        name: c.fullName,
+        title: c.currentTitle ?? "Professional",
+        company: c.currentCompany ?? "",
+        url,
+        source: linkedinIdentity ? "linkedin" : githubIdentity ? "github" : portfolioIdentity ? "portfolio" : "other",
+        snippet: c.summary ?? "",
+        matchedSkills,
+        missingSkills,
+        relevanceScore: scoreCandidate(candidateSkillSet, c.currentTitle, c.experienceYears),
+        location: c.location ?? undefined,
+        experienceYears: c.experienceYears ?? undefined,
+        education: c.educationLevel ?? undefined,
+        candidateId: c.id, // already a DB row — skip re-normalize/upsert (see processPage)
+        certifications: c.certifications.map((cert) => ({
+          name: cert.name,
+          issuer: cert.issuer ?? undefined,
+          source: cert.source,
+          confidence: cert.confidence ?? undefined,
+        })),
+        estimatedSalary: (c.estimatedSalaryMin != null || c.estimatedSalaryMax != null)
+          ? {
+            min: c.estimatedSalaryMin ?? undefined,
+            max: c.estimatedSalaryMax ?? undefined,
+            currency,
+            minINR: currency === "USD" && c.estimatedSalaryMin != null ? convertUsdToInr(c.estimatedSalaryMin) : undefined,
+            maxINR: currency === "USD" && c.estimatedSalaryMax != null ? convertUsdToInr(c.estimatedSalaryMax) : undefined,
+            source: c.salarySource ?? undefined,
+          }
+          : null,
+        openToWork: {
+          status: c.openToWork,
+          evidence: c.openToWorkEvidence ?? undefined,
+          source: c.openToWorkSource ?? undefined,
+        },
+        provider: "db" as const,
+      };
+    });
+
+  return {
+    candidates,
+    totalFound: ranked.length + hiddenAsSeen,
+    skippedAsSeen: hiddenAsSeen,
+    exhausted,
+  };
+}
+
+// Normalize + upsert every candidate on a page and stamp `candidateId` on each.
+// Sequential on purpose — if the same person appears twice, parallel upserts
+// could race and create two Candidate rows instead of merging into one.
+async function persistCandidates(candidates: WebCandidate[]): Promise<void> {
+  for (const candidate of candidates) {
+    // Already a DB row (internal DB search) — nothing to normalize or upsert.
+    if (candidate.provider === "db") continue;
+
+    let normalized;
+    if (candidate.provider === "pdl") {
+      normalized = normalizePDLCandidate(candidate.rawProvider as any, canonicalSkill);
+    } else if (candidate.provider === "github") {
+      normalized = normalizeGitHubCandidate(
+        candidate.rawProvider as any,
+        candidate.matchedSkills,
+        candidate.confirmedSkills ?? [],
+      );
+    } else {
+      normalized = normalizeWebCandidate(candidate as any);
+    }
+    // A raw (un-enriched) profile is saved at lower trust, so it can neither
+    // overwrite a previously cleaned-up record nor outrank the enriched
+    // version when this person is found again.
+    if (candidate.enrichmentFailed) normalized.lowConfidence = true;
+    const { candidateId } = await upsertCandidate(normalized);
+    candidate.candidateId = candidateId;
+  }
+}
+
+// Attach certifications / salary / open-to-work from the PERSISTED row. The
+// row reflects the merge across every provider that ever found this person
+// (e.g. a GitHub `hireable` flag still shows when Tavily found them this
+// time). One batched query, not N+1.
+async function attachPersistedInfo(candidates: WebCandidate[]): Promise<void> {
+  const ids = candidates
+    .filter((c) => c.provider !== "db") // DB results already carry this data
+    .map((c) => c.candidateId)
+    .filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return;
+
+  const persisted = await db.candidate.findMany({
+    where: { id: { in: ids } },
+    include: { certifications: true },
+  });
+  const persistedById = new Map(persisted.map((c) => [c.id, c]));
+
+  for (const candidate of candidates) {
+    if (!candidate.candidateId) continue;
+    const row = persistedById.get(candidate.candidateId);
+    if (!row) continue;
+
+    candidate.certifications = row.certifications.map((c) => ({
+      name: c.name,
+      issuer: c.issuer ?? undefined,
+      source: c.source,
+      confidence: c.confidence ?? undefined,
+    }));
+
+    const hasSalary = row.estimatedSalaryMin != null || row.estimatedSalaryMax != null;
+    const currency = row.estimatedSalaryCurrency ?? "USD";
+    candidate.estimatedSalary = hasSalary
+      ? {
+        min: row.estimatedSalaryMin ?? undefined,
+        max: row.estimatedSalaryMax ?? undefined,
+        currency,
+        minINR: currency === "USD" && row.estimatedSalaryMin != null ? convertUsdToInr(row.estimatedSalaryMin) : undefined,
+        maxINR: currency === "USD" && row.estimatedSalaryMax != null ? convertUsdToInr(row.estimatedSalaryMax) : undefined,
+        source: row.salarySource ?? undefined,
+      }
+      : null;
+
+    candidate.openToWork = {
+      status: row.openToWork,
+      evidence: row.openToWorkEvidence ?? undefined,
+      source: row.openToWorkSource ?? undefined,
+    };
+  }
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
@@ -1541,8 +1974,9 @@ export async function POST(req: NextRequest) {
       jdText = "",
       freshSearch = false,
       filters,
-      dbSkip,
-      dbTake,
+      startPage = 0,
+      excludeKeys = [],
+
     }: {
       provider: Provider;
       jobTitle: string;
@@ -1553,8 +1987,8 @@ export async function POST(req: NextRequest) {
       jdText?: string;
       freshSearch?: boolean;
       filters?: CandidateFilters;
-      dbSkip?: number; // internal DB provider only — page offset
-      dbTake?: number; // internal DB provider only — page size (default 15, max 50)
+      startPage?: number;
+      excludeKeys?: string[];
     } = body;
 
     if (!["pdl", "tavily", "exa", "serper", "github", "db"].includes(provider))
@@ -1619,201 +2053,163 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
 
-    let result: {
-      candidates: WebCandidate[];
-      totalFound: number;
-      creditsUsed?: number;
-      warning?: string;
-    };
+    const allSkills = getAllJDSkills(finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
+    const searchLocations = cleanLocations(filters?.locations);
+    const searchContextHash = buildSearchContextHash(finalJobTitle, allSkills, searchLocations);
+    // Undefined on a "fresh search": every already-seen pre-check and exclusion
+    // below keys off this, so leaving it unset turns the 30-day rule off.
+    const seenContext = freshSearch ? undefined : searchContextHash;
+    const excludeSet = new Set<string>(excludeKeys);
+    // Cursor only matters in fresh mode (nothing else advances the search then).
+    // In normal mode, the 30-day "seen" rule already moves the search forward, and
+    // the DB provider advances via SQL exclusion, so it always starts at page 0.
+    const baseStartPage = freshSearch && provider !== "db"
+      ? Math.max(0, Math.floor(Number(startPage)) || 0)
+      : 0;
+    const target = DISPLAY_TARGET[provider];
+    const maxPages = MAX_PAGES[provider];
+
+
+    // One page of results from the chosen provider. The loop below calls this
+    // for page 0, 1, 2... until it has `target` NEW candidates.
+    let fetchProviderPage: (page: number) => Promise<PageFetchResult>;
 
     if (provider === "pdl") {
-      result = await searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
+      // Resume after the PDL records already shown, so repeat searches don't
+      // re-buy (and re-hide) the same top records every time.
+      let startOffset = 0;
+      if (seenContext) {
+        try { startOffset = await countSeenPdlCandidates(seenContext); }
+        catch (error) { console.warn("PDL resume-offset lookup failed, starting from 0:", error instanceof Error ? error.message : error); }
+      }
+      fetchProviderPage = (page) =>
+        searchPDL(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills,
+          { page, startOffset, locations: searchLocations })
     } else if (provider === "db") {
-      result = await searchInternalDB(
-        finalJobTitle,
-        finalMandatorySkills,
-        finalMustHaveSkills,
-        finalNiceToHaveSkills,
-        { skip: dbSkip, take: dbTake },
-      );
+      fetchProviderPage = (page) =>
+        searchInternalDB(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills, { page, seenContext, excludeIds: [...excludeSet], locations: searchLocations });
     } else if (provider === "github") {
-      result = await searchGitHubAPI(
-        finalJobTitle,
-        finalMandatorySkills,
-        finalMustHaveSkills,
-        finalNiceToHaveSkills,
-        DEFAULT_LOCATION,
-      );
+      // The query plan costs a Groq call — compute it once, reuse every page.
+      let plan: GitHubQueryPlan | undefined;
+      fetchProviderPage = async (page) => {
+        if (!plan) plan = await planGitHubQuery(finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
+        return searchGitHubAPI(
+          finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills,
+          { page, seenContext, plan, locations: searchLocations }, DEFAULT_LOCATION
+        );
+      };
     } else {
-      result = await runWebSearch(
-        provider,
-        finalJobTitle,
-        finalMandatorySkills,
-        finalMustHaveSkills,
-        finalNiceToHaveSkills,
-        DEFAULT_LOCATION,
-      );
+      fetchProviderPage = (page) =>
+        runWebSearch(provider, finalJobTitle, finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills,
+          { page, seenContext, locations: searchLocations })
     }
 
-    // ─── Normalize, dedupe/persist, apply 30-day freshness ─────────
-    // Fails OPEN by design: if the DB is unreachable, unconfigured, or
-    // anything here throws, the search still returns its normal results
-    // untouched. Persistence is additive — never a hard dependency for the
-    // recruiter-facing search feature to keep working.
-    let suppressedByFreshness = 0;
-    let filteredOutByFilters = 0;
-    let filtersApplied = false;
-    try {
-      const allSkills = getAllJDSkills(finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
-      const searchContextHash = buildSearchContextHash(finalJobTitle, allSkills);
+    // Persistence / freshness are additive: if the DB is down the search still
+    // returns results (failing OPEN), it just can't judge "already seen".
+    let persistenceHealthy = true;
 
-      // Sequential (not Promise.all) — avoids a race where the same person
-      // appearing twice in one result set could create two Candidate rows
-      // instead of merging into one.
-      for (const candidate of result.candidates) {
-        // Already a DB row (internal DB search) — it IS the
-        // persisted source of truth already, nothing to normalize or upsert.
-        if (candidate.provider === "db") continue;
+    const processPage = async (rawItems: WebCandidate[]): Promise<PageProcessed<WebCandidate>> => {
+      const notShown = excludeSet.size
+        ? rawItems.filter((c) => ![c.candidateId, c.url, c.id].some((k) => k && excludeSet.has(k)))
+        : rawItems;
 
-        let normalized;
-        if (candidate.provider === "pdl") {
-          normalized = normalizePDLCandidate(candidate.rawProvider as any, canonicalSkill);
-        } else if (candidate.provider === "github") {
-          normalized = normalizeGitHubCandidate(
-            candidate.rawProvider as any,
-            candidate.matchedSkills,
-            candidate.confirmedSkills ?? [],
+      // DB rows are already saved; everything else must have a real person's name.
+      const items = notShown.filter((c) => c.provider === "db" || isPlausiblePersonName(c.name));
+
+      let fresh = items;
+      let suppressed = 0;
+      if (persistenceHealthy) {
+        try {
+          await persistCandidates(items);
+          const ids = items.map((c) => c.candidateId).filter((id): id is string => Boolean(id));
+          const { freshCandidateIds, excludedCandidateIds } = await filterByFreshness(ids, searchContextHash, freshSearch);
+          const freshSet = new Set(freshCandidateIds);
+          fresh = items.filter((c) => !c.candidateId || freshSet.has(c.candidateId));
+          suppressed = excludedCandidateIds.length;
+          await attachPersistedInfo(fresh);
+        } catch (dbError) {
+          persistenceHealthy = false;
+          fresh = items;
+          suppressed = 0;
+          console.error(
+            "Candidate persistence/freshness step failed — returning un-persisted results:",
+            dbError instanceof Error ? dbError.message : dbError,
           );
-        } else {
-          normalized = normalizeWebCandidate(candidate as any);
-        }
-        const { candidateId } = await upsertCandidate(normalized);
-        candidate.candidateId = candidateId;
-      }
-
-      const candidateIds = result.candidates
-        .map((c) => c.candidateId)
-        .filter((id): id is string => Boolean(id));
-
-      // ─── Attach certifications / salary / open-to-work ─────────
-      // Pulled from the PERSISTED Candidate row, not just this provider's
-      // own normalized result — the DB row reflects the merge across every
-      // provider that has ever found this person (e.g. a GitHub `hireable`
-      // signal should still show up even on a search that found them via
-      // Tavily this time). One batched query, not N+1.
-      if (candidateIds.length > 0) {
-        const persisted = await db.candidate.findMany({
-          where: { id: { in: candidateIds } },
-          include: { certifications: true },
-        });
-        const persistedById = new Map(persisted.map((c) => [c.id, c]));
-
-        for (const candidate of result.candidates) {
-          if (!candidate.candidateId) continue;
-          const row = persistedById.get(candidate.candidateId);
-          if (!row) continue;
-
-          candidate.certifications = row.certifications.map((c) => ({
-            name: c.name,
-            issuer: c.issuer ?? undefined,
-            source: c.source,
-            confidence: c.confidence ?? undefined,
-          }));
-
-          const hasSalary = row.estimatedSalaryMin != null || row.estimatedSalaryMax != null;
-          const currency = row.estimatedSalaryCurrency ?? "USD";
-          candidate.estimatedSalary = hasSalary
-            ? {
-              min: row.estimatedSalaryMin ?? undefined,
-              max: row.estimatedSalaryMax ?? undefined,
-              currency,
-              minINR: currency === "USD" && row.estimatedSalaryMin != null ? convertUsdToInr(row.estimatedSalaryMin) : undefined,
-              maxINR: currency === "USD" && row.estimatedSalaryMax != null ? convertUsdToInr(row.estimatedSalaryMax) : undefined,
-              source: row.salarySource ?? undefined,
-            }
-            : null;
-
-          candidate.openToWork = {
-            status: row.openToWork,
-            evidence: row.openToWorkEvidence ?? undefined,
-            source: row.openToWorkSource ?? undefined,
-          };
         }
       }
+      // Recruiter filters count toward the target, so a strict filter makes
+      // the loop page deeper instead of just returning fewer people.
+      const filtered = applyCandidateFilters(fresh, filters, canonicalSkill);
+      return { accepted: filtered.candidates, suppressed, filteredOut: filtered.removed };
+    };
 
-      const { freshCandidateIds, excludedCandidateIds } = await filterByFreshness(
-        candidateIds,
-        searchContextHash,
-        Boolean(freshSearch),
-      );
-      const freshSet = new Set(freshCandidateIds);
+    // Metadata gathered across pages.
+    let totalFound = 0;
+    let creditsUsed: number | undefined;
+    const providerWarnings = new Set<string>();
+    let skippedAsSeen = 0;
 
-      result = {
-        ...result,
-        candidates: result.candidates.filter((c) => !c.candidateId || freshSet.has(c.candidateId)),
-      };
-      suppressedByFreshness = excludedCandidateIds.length;
+    const gathered = await gatherUntil<WebCandidate>({
+      target,
+      maxPages,
+      startPage: baseStartPage,
+      keyOf: (c) => c.candidateId ?? c.url ?? c.id,
+      stopWhen: () => !persistenceHealthy,
+      processPage,
+      fetchPage: async (page) => {
+        const r = await fetchProviderPage(page);
+        if (page === 0) totalFound = r.totalFound;
+        if (r.creditsUsed !== undefined) creditsUsed = (creditsUsed ?? 0) + r.creditsUsed;
+        if (r.warning) providerWarnings.add(r.warning);
+        skippedAsSeen += r.skippedAsSeen ?? 0;
+        return { items: r.candidates, exhausted: r.exhausted };
+      },
+    });
 
-      // ─── Recruiter-selected filters ─────────────────────────────
-      // Applied AFTER persistence (so everyone found still gets stored) and
-      // AFTER freshness, but BEFORE recording history — a candidate hidden by
-      // a filter was never actually shown, so it shouldn't count as "seen"
-      // and get suppressed for 30 days on the next search.
-      const filtered = applyCandidateFilters(result.candidates, filters, canonicalSkill);
-      result = { ...result, candidates: filtered.candidates };
-      filteredOutByFilters = filtered.removed;
-      filtersApplied = true;
+    const sorted = [...gathered.items].sort((a, b) => b.relevanceScore - a.relevanceScore);
+    const finalCandidates = sorted.slice(0, target);
 
-      // ─── Final display slice ─────────────────────────────────────────────
-      // Everything above ran against the FULL widened pool (up to 25 for
-      // GitHub/Tavily/Exa/Serper, 200 for the DB). Only now — after freshness
-      // and filters have both had the whole pool to work with — do we cut
-      // down to what the recruiter actually sees. This is what lets a repeat
-      // search surface different people instead of just suppressing the same
-      // top 10 down to zero.
-      result = {
-        ...result,
-        candidates: [...result.candidates]
-          .sort((a, b) => b.relevanceScore - a.relevanceScore)
-          .slice(0, DISPLAY_LIMIT),
-      };
+    // If we trimmed candidates, don't skip past the page they came from: re-fetching
+    // the last page is safe because excludeKeys removes whoever was shown.
+    const nextPage = baseStartPage + (gathered.items.length > target
+      ? Math.max(0, gathered.pagesFetched - 1)
+      : gathered.pagesFetched);
 
-      const shownIds = result.candidates
-        .map((c) => c.candidateId)
-        .filter((id): id is string => Boolean(id));
-      await recordSearchHistory(shownIds, searchContextHash, finalJobTitle);
-    } catch (dbError) {
-      console.error(
-        "Candidate persistence/freshness step failed — returning un-persisted results:",
-        dbError instanceof Error ? dbError.message : dbError,
-      );
+    // Record only what is actually shown — a candidate hidden by a filter or
+    // trimmed above was never seen, so it must not be suppressed next time.
+    if (persistenceHealthy) {
+      try {
+        // A profile whose AI clean-up failed is shown, but not recorded as seen:
+        // the 30-day rule would otherwise hide it from future searches and leave
+        // its raw text behind. Left unrecorded, the next search retries it.
+        const shownIds = finalCandidates
+          .filter((c) => !c.enrichmentFailed)
+          .map((c) => c.candidateId)
+          .filter((id): id is string => Boolean(id));
+        await recordSearchHistory(shownIds, searchContextHash, finalJobTitle);
+      } catch (error) {
+        console.error("Failed to record search history:", error instanceof Error ? error.message : error);
+      }
     }
 
-    // Fail-open path: if the DB step threw before filters ran, still honor
-    // the recruiter's filters (they're pure and don't need the DB).
-    if (!filtersApplied) {
-      const filtered = applyCandidateFilters(result.candidates, filters, canonicalSkill);
-      result = {
-        ...result,
-        candidates: [...filtered.candidates]
-          .sort((a, b) => b.relevanceScore - a.relevanceScore)
-          .slice(0, DISPLAY_LIMIT),
-      };
-      filteredOutByFilters = filtered.removed;
-    }
+    const warning =
+      [...providerWarnings, gathered.stoppedEarly ? `Stopped fetching more results early: ${gathered.stoppedEarly}` : undefined]
+        .filter(Boolean)
+        .join(" · ") || undefined;
 
     return NextResponse.json({
-      candidates: result.candidates,
-      totalFound: result.totalFound,
+      candidates: finalCandidates,
+      totalFound,
       searchedAt: new Date().toISOString(),
       provider,
-      creditsUsed: result.creditsUsed,
-      warning: result.warning,
-      extractedJD,
-      suppressedByFreshness,
-      filteredOutByFilters,
+      creditsUsed,
+      warning,
+      nextPage,
+      exhausted: gathered.exhausted,
+      // Hidden as already-seen = skipped before enrichment + dropped after persisting.
+      suppressedByFreshness: gathered.suppressed + skippedAsSeen,
+      filteredOutByFilters: gathered.filteredOut,
     } as CandidateSearchResponse);
-
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";

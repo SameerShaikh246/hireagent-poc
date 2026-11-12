@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { groqGenerate } from "@/lib/groq";
+import { getCentralGroqKeys, getProviderKeys } from "@/lib/providerKeys";
 
 export type SkillSuggestion = {
   skill: string;
@@ -19,7 +21,9 @@ async function fetchFromGroq(
   title: string,
   department: string,
   roleType: string,
-  apiKey: string,
+  // Fallback only: used when the server has no GROQ_API_KEYS configured.
+  // With a server key pool set, this is ignored (and failover applies).
+  fallbackApiKey?: string,
 ): Promise<SuggestSkillsResponse | null> {
   const prompt = `You are a senior recruiter. Suggest skills for this role, split into three tiers.
 
@@ -51,33 +55,17 @@ Rules:
 - Never suggest generic office skills (email, ms word, etc.)`;
 
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 1200,
-        temperature: 0.2,
-      }),
+    // groqGenerate walks the whole key pool: an invalid, exhausted or
+    // rate-limited key falls through to the next one. If every key fails it
+    // throws, and we return null so the ESCO / local fallbacks take over —
+    // suggestions must never be the thing that breaks the form.
+    const raw = await groqGenerate(prompt, {
+      ...getCentralGroqKeys(fallbackApiKey),
+      model: "openai/gpt-oss-120b",
+      maxTokens: 1200,
+      temperature: 0.2,
     });
 
-    if (!res.ok) {
-      const errorText = await res.text();
-
-      console.error("[Groq] API ERROR:", {
-        status: res.status,
-        statusText: res.statusText,
-        body: errorText,
-      });
-
-      return null;
-    }
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content ?? "";
     const match = raw
       .replace(/```(?:json)?\s*/gi, "")
       .replace(/```/g, "")
@@ -113,7 +101,7 @@ Rules:
       occupation: String(parsed.occupation ?? title),
     };
   } catch (error) {
-    console.error("[Groq] FETCH ERROR:", error);
+    console.error("[Groq] suggestions failed, falling back:", error instanceof Error ? error.message : error);
     return null;
   }
 }
@@ -229,6 +217,9 @@ function localFallback(title: string): SuggestSkillsResponse {
 // Handler
 export async function POST(req: NextRequest) {
   try {
+    // `apiKey` is still read from the body so older clients keep working, but
+    // it is only a FALLBACK now: the server's GROQ_API_KEYS pool is preferred,
+    // and a typed key is used only when no server key is configured.
     const { title, department, roleType, apiKey } = await req.json();
 
     if (!title || title.trim().length < 2)
@@ -237,12 +228,15 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
 
-    if (apiKey) {
+    const typedKey = typeof apiKey === "string" ? apiKey.trim() : "";
+    const groqAvailable = getProviderKeys("groq").length > 0 || typedKey.length >= 10;
+
+    if (groqAvailable) {
       const groq = await fetchFromGroq(
         title.trim(),
         department ?? "",
         roleType ?? "technical",
-        apiKey,
+        typedKey,
       );
       if (groq) return NextResponse.json(groq);
     }

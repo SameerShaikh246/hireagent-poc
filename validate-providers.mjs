@@ -21,7 +21,7 @@ function inspectFields(label, obj, fieldsOfInterest) {
     const val = obj?.[f];
     console.log(
       `  ${f.padEnd(28)} present=${String(present).padEnd(6)} type=${typeof val
-        }${present ? `  sample=${JSON.stringify(val)?.slice(0, 200)}` : ""}`,
+      }${present ? `  sample=${JSON.stringify(val)?.slice(0, 200)}` : ""}`,
     );
   }
 }
@@ -53,12 +53,12 @@ async function validatePDL() {
     "linkedin_url",
     "github_url",
     "skills",
-    "certifications",              // <- confirm this exists / what shape
-    "inferred_salary",             // <- confirm this exists / what shape
+    "certifications",
+    "inferred_salary",
     "inferred_years_experience",
     "education",
     "experience",
-    "job_last_changed",            // sometimes used as an open-to-work-ish proxy
+    "job_last_changed",
     "job_last_verified",
   ]);
   console.log("\n  FULL top-level keys on this record:", Object.keys(record).join(", "));

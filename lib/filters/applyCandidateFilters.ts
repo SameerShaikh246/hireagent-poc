@@ -1,16 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Candidate Result Filters
-//
-// Pure function: takes any list of result candidates (PDL, GitHub, web
-// search, or internal DB — they all share the WebCandidate shape) and
-// applies recruiter-selected filters. No DB or network calls.
-//
-// Missing-data policy: many web-sourced candidates have no experienceYears
-// or education. By default a candidate with UNKNOWN data is excluded when
-// the matching filter is active (a "min 3 years" filter shouldn't quietly
-// let through people whose experience we simply don't know). Set
-// includeUnknown: true to keep them instead.
-// ─────────────────────────────────────────────────────────────────────────
+import { cleanLocations, expandLocations } from "@/lib/search/locations";
 
 export type EducationLevel = "any" | "diploma" | "bachelor" | "master" | "phd";
 
@@ -25,6 +13,7 @@ export interface CandidateFilters {
     maxExperience?: number;
     /** Keep candidates whose experience/education is unknown. Default false. */
     includeUnknown?: boolean;
+    locations?: string[];
 }
 
 interface FilterableCandidate {
@@ -32,6 +21,7 @@ interface FilterableCandidate {
     relevanceScore: number;
     experienceYears?: number;
     education?: string;
+    location?: string;
 }
 
 const EDUCATION_RANK: Record<Exclude<EducationLevel, "any">, number> = {
@@ -96,6 +86,12 @@ export function applyCandidateFilters<T extends FilterableCandidate>(
                 if (filters.minExperience !== undefined && c.experienceYears < filters.minExperience) return false;
                 if (filters.maxExperience !== undefined && c.experienceYears > filters.maxExperience) return false;
             }
+        }
+
+        const locs = expandLocations(cleanLocations(filters.locations));
+        if (locs.length > 0 && c.location) {
+            const loc = c.location.toLowerCase();
+            if (!locs.some((l) => loc.includes(l))) return false;
         }
 
         return true;

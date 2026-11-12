@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Globe, CheckCircle, BarChart3, Database, History, AlertTriangle, RotateCcw, RefreshCw } from "lucide-react";
+import { Globe, CheckCircle, BarChart3, Database, History, AlertTriangle, RotateCcw, RefreshCw, MapPin } from "lucide-react";
 import { useWebSearch } from "@/context/WebSearchContext";
 import { useJD } from "@/context/JDContext";
 import { PROVIDERS } from "@/lib/searchProviders";
@@ -24,9 +24,13 @@ export default function SearchResultsView() {
         suppressedByFreshness,
         filteredOutByFilters,
         lastFilters,
+        lastAddedCount,
         loading,
         runSearch,
         reset,
+        freshMode,
+        setFreshMode,
+        exhausted
     } = useWebSearch();
 
     const [filterSource, setFilterSource] = useState<WebCandidate["source"] | "all">("all");
@@ -83,6 +87,20 @@ export default function SearchResultsView() {
         await runSearch({ structuredJD, jdMode, jdText, filters, freshSearch: true });
     };
 
+    // Fetch the NEXT batch of people (ones not shown yet) and add them below the
+    // current list. freshSearch stays false on purpose: the 30-day rule is what
+    // makes each call return different people.
+    const [loadedMore, setLoadedMore] = useState(false);
+    const loadMore = async () => {
+        setLoadedMore(true);
+        await runSearch({
+            structuredJD, jdMode, jdText,
+            filters: lastFilters,
+            freshSearch: freshMode,   // was hard-coded false
+            append: true,
+        });
+    };
+
     // Phase 5 — bypass the 30-day "already seen" exclusion, keeping whatever
     // filters are currently active.
     const runFreshSearch = async () => {
@@ -106,6 +124,11 @@ export default function SearchResultsView() {
                         <RefreshCw size={13} strokeWidth={2.25} className={loading ? "animate-spin" : ""} />
                         {loading ? "Searching…" : "Fresh search"}
                     </button>
+                    <label className="flex items-center gap-1.5 text-[12px] text-(--text-secondary) cursor-pointer select-none"
+                        title="ON: include candidates seen in the last 30 days. OFF: hide them.">
+                        <input type="checkbox" checked={freshMode} onChange={(e) => setFreshMode(e.target.checked)} disabled={loading} />
+                        Include previously seen
+                    </label>
                     <button
                         onClick={startNewSearch}
                         disabled={loading}
@@ -217,7 +240,14 @@ export default function SearchResultsView() {
                 </div>
             )}
 
-            {/* Phase 8 — filter panel */}
+            {lastFilters?.locations && lastFilters.locations.length > 0 && (
+                <div className="flex items-center gap-1.5 text-[12px] text-(--text-muted) mb-3 px-1">
+                    <MapPin size={13} strokeWidth={2} />
+                    Searching in: <span className="font-medium text-(--text-secondary)">{lastFilters.locations.join(", ")}</span>
+                </div>
+            )}
+
+            {/* filter panel */}
             <CandidateFiltersPanel
                 availableSkills={effectiveSkills}
                 initialFilters={lastFilters}
@@ -270,7 +300,7 @@ export default function SearchResultsView() {
                 <div className="flex flex-col gap-[10px]">
                     {filtered.map((c, i) => (
                         <WebCandidateCard
-                            key={c.id}
+                            key={`${c.id}-${i}`}
                             c={c}
                             rank={i + 1}
                             expandedId={expandedId}
@@ -278,6 +308,23 @@ export default function SearchResultsView() {
                             allSkills={effectiveSkills}
                         />
                     ))}
+                </div>
+            )}
+
+            {/* Load more — each call returns people not shown before */}
+            {list.length > 0 && (
+                <div className="flex flex-col items-center gap-1.5 mt-5">
+                    <button
+                        onClick={loadMore}
+                        disabled={loading || exhausted}
+                        className="text-[13px] font-semibold px-5 py-2.5 rounded-lg border cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                        style={{ borderColor: "var(--border)", color: "var(--accent)", background: "var(--surface)" }}
+                    >
+                        {loading ? "Loading more…" : "Load more candidates"}
+                    </button>
+                    {loadedMore && !loading && (lastAddedCount === 0 || exhausted) && (
+                        <span className="text-[11px] text-(--text-muted)">No more candidates for this search.</span>
+                    )}
                 </div>
             )}
 

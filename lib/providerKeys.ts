@@ -138,13 +138,35 @@ export async function withKeyFailover<T>(
 // support (lib/groq.ts) — Groq already does its own per-key RPM/TPM
 // tracking and retry, so for Groq specifically we feed the env pool into
 // that existing mechanism rather than double-wrapping with withKeyFailover.
-export function getCentralGroqKeys(): { apiKey: string; apiKeys: string[] } {
+
+export function getCentralGroqKeys(
+    fallbackApiKey?: string,
+): { apiKey: string; apiKeys: string[] } {
     const keys = getProviderKeys("groq");
-    if (keys.length === 0) {
-        throw new Error("No Groq API key configured on the server. Set GROQ_API_KEYS in your environment.");
+
+    // Prefer server-configured keys.
+    if (keys.length > 0) {
+        return {
+            apiKey: keys[0],
+            apiKeys: keys.slice(1),
+        };
     }
-    return { apiKey: keys[0], apiKeys: keys.slice(1) };
+
+    // Use the client-provided key only if no server keys exist.
+    const fallback = fallbackApiKey?.trim();
+
+    if (fallback) {
+        return {
+            apiKey: fallback,
+            apiKeys: [],
+        };
+    }
+
+    throw new Error(
+        "No Groq API key configured. Set GROQ_API_KEYS in your environment.",
+    );
 }
+
 
 // Optional observability — e.g. for a debug/admin endpoint.
 export function getProviderKeyStats(

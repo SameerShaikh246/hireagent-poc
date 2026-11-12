@@ -65,4 +65,5 @@ export interface CandidateFilters {
   minExperience?: number;
   maxExperience?: number;
   includeUnknown?: boolean;
+  locations?: string[];
 }

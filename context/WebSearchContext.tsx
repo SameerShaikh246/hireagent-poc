@@ -7,8 +7,13 @@ interface RunSearchArgs {
     structuredJD: StructuredJD;
     jdMode: JDMode;
     jdText: string;
+    /** Phase 8 — recruiter-selected filters. Omit/undefined = no filtering. */
     filters?: CandidateFilters;
+    /** Phase 5 — bypass the 30-day "already seen" exclusion for this run. */
     freshSearch?: boolean;
+    /** "Load more": add this batch to the list already on screen instead of replacing it. */
+    append?: boolean;
+    locations?: string[];
 }
 
 
@@ -29,8 +34,14 @@ interface WebSearchContextValue {
     filteredOutByFilters: number;
     /** The filters used for the most recent search — lets the filter panel restore its own state, and lets "Fresh search" re-run with the same filters. */
     lastFilters: CandidateFilters | undefined;
+    freshMode: boolean;
+    setFreshMode: (value: boolean) => void;
+    exhausted: boolean;
+    lastAddedCount: number | null;
     runSearch: (args: RunSearchArgs) => Promise<boolean>;
     reset: () => void;
+    searchLocations: string[];
+    setSearchLocations: (locations: string[]) => void;
 }
 
 const WebSearchContext = createContext<WebSearchContextValue | null>(null);
@@ -48,6 +59,12 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
     const [suppressedByFreshness, setSuppressedByFreshness] = useState(0);
     const [filteredOutByFilters, setFilteredOutByFilters] = useState(0);
     const [lastFilters, setLastFilters] = useState<CandidateFilters | undefined>(undefined);
+    const [lastAddedCount, setLastAddedCount] = useState<number | null>(null);
+    const [freshMode, setFreshMode] = useState(false);
+    const [lastRunFresh, setLastRunFresh] = useState(false);
+    const [nextPage, setNextPage] = useState(0);
+    const [exhausted, setExhausted] = useState(false);
+    const [searchLocations, setSearchLocations] = useState<string[]>([]);
 
     const runSearch = async ({
         structuredJD,
@@ -55,10 +72,29 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
         jdText,
         filters,
         freshSearch,
+        append,
+        locations
     }: RunSearchArgs) => {
         setLoading(true);
         setError("");
         try {
+            // Priority: explicit arg > filters.locations > what's saved from the first page.
+            const effectiveLocations = (locations ?? filters?.locations ?? searchLocations)
+                .map((l) => l.trim())
+                .filter(Boolean);
+
+            const effectiveFilters: CandidateFilters | undefined =
+                effectiveLocations.length || filters
+                    ? { ...filters, locations: effectiveLocations.length ? effectiveLocations : undefined }
+                    : undefined;
+            const useFresh = Boolean(freshSearch);
+            // Only continue the cursor if the mode hasn't changed since the last request;
+            // excludeKeys already prevents duplicates either way.
+            const startPage = append && useFresh === lastRunFresh ? nextPage : 0;
+            const excludeKeys = append
+                ? (results ?? []).flatMap((c) => [c.candidateId, c.url, c.id].filter((k): k is string => Boolean(k)))
+                : [];
+
             const res = await fetch("/api/search-candidates", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -73,13 +109,29 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                     roleType: structuredJD.roleType,
                     jdMode,
                     jdText,
-                    filters,
-                    freshSearch: Boolean(freshSearch),
+                    filters: effectiveFilters,
+                    freshSearch: useFresh,
+                    startPage,
+                    excludeKeys,
                 }),
             });
             const data = await res.json();
+
             if (!res.ok) throw new Error(data.error || "Search failed");
-            setResults(data.candidates);
+            const incoming: WebCandidate[] = data.candidates ?? [];
+            if (append) {
+                // Keep what's on screen, add only people not already in the list.
+                // (`results` is current here: the Load more button is disabled
+                // while a search is running, so nothing else can change it mid-flight.)
+                const have = new Set((results ?? []).map((c) => c.id));
+                const fresh = incoming.filter((c) => !have.has(c.id));
+                setResults([...(results ?? []), ...fresh]);
+                setLastAddedCount(fresh.length);
+            } else {
+                setResults(incoming);
+                setLastAddedCount(incoming.length);
+            }
+
             setTotalFound(data.totalFound);
             setSearchedAt(data.searchedAt);
             setCreditsUsed(data.creditsUsed);
@@ -87,7 +139,12 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
             setWarning(data.warning ?? "");
             setSuppressedByFreshness(data.suppressedByFreshness ?? 0);
             setFilteredOutByFilters(data.filteredOutByFilters ?? 0);
-            setLastFilters(filters);
+            setLastFilters(effectiveFilters);
+            setSearchLocations(effectiveLocations);
+            setLastRunFresh(useFresh);
+            if (!append) setFreshMode(useFresh);   // keep the toggle in sync with Fresh search / Apply filters
+            setNextPage(data.nextPage ?? 0);
+            setExhausted(Boolean(data.exhausted));
             return true;
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Unknown error");
@@ -105,6 +162,12 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
         setSuppressedByFreshness(0);
         setFilteredOutByFilters(0);
         setLastFilters(undefined);
+        setLastAddedCount(null);
+        setNextPage(0);
+        setExhausted(false);
+        setFreshMode(false);
+        setLastRunFresh(false);
+        setSearchLocations([]);
     };
 
     return (
@@ -123,8 +186,14 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                 suppressedByFreshness,
                 filteredOutByFilters,
                 lastFilters,
+                lastAddedCount,
                 runSearch,
                 reset,
+                freshMode,
+                setFreshMode,
+                exhausted,
+                searchLocations,
+                setSearchLocations,
             }}
         >
             {children}

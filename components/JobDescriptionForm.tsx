@@ -35,6 +35,57 @@ const TIER_STYLES: Record<"mandatory" | "must" | "nice", TierStyle> = {
   },
 };
 
+const JOB_PRESETS: { title: string; department: string }[] = [
+  // Engineering
+  { title: "React Developer", department: "Engineering" },
+  { title: "Frontend Developer", department: "Engineering" },
+  { title: "Backend Developer", department: "Engineering" },
+  { title: "Full Stack Developer", department: "Engineering" },
+  { title: "Software Engineer", department: "Engineering" },
+  { title: "Python Developer", department: "Engineering" },
+  { title: "Java Developer", department: "Engineering" },
+  { title: "Node.js Developer", department: "Engineering" },
+  { title: ".NET Developer", department: "Engineering" },
+  { title: "Angular Developer", department: "Engineering" },
+  { title: "PHP Developer", department: "Engineering" },
+  { title: "Mobile App Developer", department: "Engineering" },
+  { title: "Android Developer", department: "Engineering" },
+  { title: "iOS Developer", department: "Engineering" },
+  { title: "WordPress Developer", department: "Web Development" },
+  // Infra / Quality
+  { title: "DevOps Engineer", department: "Infrastructure & Cloud" },
+  { title: "Cloud Engineer", department: "Infrastructure & Cloud" },
+  { title: "QA Engineer", department: "Quality Assurance" },
+  { title: "Automation Test Engineer", department: "Quality Assurance" },
+  // Data / AI
+  { title: "Data Analyst", department: "Data & Analytics" },
+  { title: "Data Scientist", department: "Data & Analytics" },
+  { title: "Data Engineer", department: "Data & Analytics" },
+  { title: "Machine Learning Engineer", department: "AI / Machine Learning" },
+  { title: "Business Analyst", department: "Business Analysis" },
+  // Product / Design
+  { title: "Product Manager", department: "Product" },
+  { title: "Project Manager", department: "Project Management" },
+  { title: "UI/UX Designer", department: "Design" },
+  { title: "Graphic Designer", department: "Design" },
+  // Business functions
+  { title: "Digital Marketing Executive", department: "Marketing" },
+  { title: "SEO Specialist", department: "Marketing" },
+  { title: "Content Writer", department: "Marketing" },
+  { title: "Sales Executive", department: "Sales" },
+  { title: "HR Recruiter", department: "Human Resources" },
+  { title: "Customer Support Executive", department: "Customer Support" },
+  { title: "Accountant", department: "Finance & Accounting" },
+];
+
+const DEPARTMENT_OPTIONS: string[] = Array.from(
+  new Set([
+    ...JOB_PRESETS.map((p) => p.department),
+    "Fintech", "Healthcare", "Gaming", "E-commerce", "Education / EdTech",
+    "Banking & Insurance", "Telecom", "Manufacturing", "Retail", "Logistics",
+  ])
+);
+
 // TagInput
 function TagInput({
   id, tags, onChange, placeholder, tier, disabled, suggestions, suggestionsLoading,
@@ -174,6 +225,74 @@ function TagInput({
               Type a skill name and press <kbd className="px-1.5 py-0.5 bg-[var(--bg)] border border-[var(--border)] rounded text-[11px]">Enter</kbd> to add it here
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ComboInput: free typing + preset dropdown
+function ComboInput({
+  value, onChange, onPick, options, placeholder, disabled, className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onPick: (label: string) => void;
+  options: { label: string; hint?: string }[];
+  placeholder: string;
+  disabled?: boolean;
+  className: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const hideTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const q = value.trim().toLowerCase();
+  const filtered = options
+    .filter((o) => !q || o.label.toLowerCase().includes(q))
+    .slice(0, 8);
+  // Hide when the input already exactly matches the only option
+  const exact = filtered.length === 1 && filtered[0].label.toLowerCase() === q;
+
+  const openDd = () => { if (hideTimer.current) clearTimeout(hideTimer.current); setOpen(true); };
+  const closeDd = () => { hideTimer.current = setTimeout(() => setOpen(false), 160); };
+  const pick = (label: string) => { onPick(label); setOpen(false); setActive(0); };
+
+  return (
+    <div className="relative">
+      <input
+        className={className}
+        value={value}
+        onChange={(e) => { onChange(e.target.value); setActive(0); openDd(); }}
+        onFocus={openDd}
+        onBlur={closeDd}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); openDd(); setActive((a) => Math.min(a + 1, filtered.length - 1)); }
+          if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
+          if (e.key === "Enter" && open && filtered[active] && !exact) { e.preventDefault(); pick(filtered[active].label); }
+          if (e.key === "Escape") setOpen(false);
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoComplete="off"
+      />
+
+      {open && !disabled && filtered.length > 0 && !exact && (
+        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden max-h-[260px] overflow-y-auto">
+          {filtered.map((o, i) => (
+            <button
+              key={o.label}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); if (hideTimer.current) clearTimeout(hideTimer.current); pick(o.label); }}
+              onMouseEnter={() => setActive(i)}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 border-none cursor-pointer text-left transition-colors ${i === active ? "bg-[var(--bg)]" : "bg-transparent"}`}
+            >
+              <span className="flex-1 text-[13px] text-[var(--text-primary)]">{o.label}</span>
+              {o.hint && (
+                <span className="text-[11px] text-[var(--text-muted)] text-right max-w-[160px] truncate">{o.hint}</span>
+              )}
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -360,20 +479,32 @@ export default function JobDescriptionForm({
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <label className={labelCls}>Job title <span className="text-[var(--danger)]">*</span></label>
-                  <input
+                  <ComboInput
                     className={inputCls}
                     value={structured.title}
-                    onChange={(e) => set("title", e.target.value)}
+                    onChange={(v) => set("title", v)}
+                    onPick={(label) => {
+                      const preset = JOB_PRESETS.find((p) => p.title === label);
+                      // single update so title + department don't overwrite each other
+                      onStructuredChange({
+                        ...structured,
+                        title: label,
+                        department: preset?.department ?? structured.department,
+                      });
+                    }}
+                    options={JOB_PRESETS.map((p) => ({ label: p.title, hint: p.department }))}
                     placeholder="e.g. QA Engineer, Data Analyst…"
                     disabled={disabled}
                   />
                 </div>
                 <div>
                   <label className={labelCls}>Department / industry</label>
-                  <input
+                  <ComboInput
                     className={inputCls}
                     value={structured.department ?? ""}
-                    onChange={(e) => set("department", e.target.value)}
+                    onChange={(v) => set("department", v)}
+                    onPick={(label) => set("department", label)}
+                    options={DEPARTMENT_OPTIONS.map((d) => ({ label: d }))}
                     placeholder="e.g. Fintech, Gaming, Healthcare…"
                     disabled={disabled}
                   />
@@ -469,7 +600,6 @@ export default function JobDescriptionForm({
             {/* Section: Skills */}
             <div className="flex flex-col gap-4">
               <div className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-widest">Skill tiers</div>
-
               <div className="grid grid-cols-2 gap-4">
                 <TierBlock
                   tier="mandatory"
@@ -486,7 +616,6 @@ export default function JobDescriptionForm({
                   loading={suggestionsLoading}
                   disabled={disabled}
                 />
-
                 <TierBlock
                   tier="must"
                   label="Must-have"

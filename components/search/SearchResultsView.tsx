@@ -39,18 +39,13 @@ export default function SearchResultsView() {
     const meta = PROVIDERS[provider];
     const isFreeText = jdMode === "freetext";
     const jdText = isFreeText ? freeTextJD : buildJDText(structuredJD);
+    const jdSkills = extractedJD
+        ? [...extractedJD.mandatorySkills, ...extractedJD.mustHaveSkills, ...extractedJD.niceToHaveSkills]
+        : [...structuredJD.mandatorySkills, ...structuredJD.mustHaveSkills, ...structuredJD.niceToHaveSkills];
 
-    // extractedJD is ONLY populated by the backend in free-text JD mode (it's
-    // what Groq extracted from the pasted text). In structured mode it's
-    // always null — the skills were already known, nothing to extract. Using
-    // extractedJD alone here meant structured-mode searches always got an
-    // empty effectiveSkills array: a 0 max on the "Skills matched" bar (so it
-    // never filled, regardless of how many skills actually matched), and no
-    // skill chips in the filter panel at all. Falling back to structuredJD's
-    // own lists fixes both.
-    const effectiveSkills = extractedJD
-        ? [...new Set([...extractedJD.mandatorySkills, ...extractedJD.mustHaveSkills, ...extractedJD.niceToHaveSkills])]
-        : [...new Set([...structuredJD.mandatorySkills, ...structuredJD.mustHaveSkills, ...structuredJD.niceToHaveSkills])];
+    const skillsFromResults = (results ?? []).flatMap((c) => [...c.matchedSkills, ...c.missingSkills]);
+
+    const effectiveSkills = [...new Set(jdSkills.length > 0 ? jdSkills : skillsFromResults)];
 
     const list = results ?? [];
     const filtered = list.filter((c) => filterSource === "all" || c.source === filterSource);
@@ -244,6 +239,7 @@ export default function SearchResultsView() {
                 <div className="flex items-center gap-1.5 text-[12px] text-(--text-muted) mb-3 px-1">
                     <MapPin size={13} strokeWidth={2} />
                     Searching in: <span className="font-medium text-(--text-secondary)">{lastFilters.locations.join(", ")}</span>
+                    {isFreeText && extractedJD?.locations?.length ? " (from your JD)" : ""}
                 </div>
             )}
 

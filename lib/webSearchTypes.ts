@@ -52,6 +52,7 @@ export interface ExtractedJD {
   mandatorySkills: string[];
   mustHaveSkills: string[];
   niceToHaveSkills: string[];
+  locations?: string[];
 }
 
 // Recruiter-selected result filters, sent to /api/search-candidates.

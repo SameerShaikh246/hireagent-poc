@@ -89,11 +89,16 @@ export async function upsertCandidate(normalized: NormalizedCandidate): Promise<
         });
     }
 
-    for (const skill of normalized.skills) {
-        await db.candidateSkill.upsert({
-            where: { candidateId_skill: { candidateId, skill: skill.skill } },
-            update: { source: skill.source, confidence: skill.confidence },
-            create: { candidateId, skill: skill.skill, source: skill.source, confidence: skill.confidence },
+
+    if (normalized.skills.length) {
+        await db.candidateSkill.createMany({
+            data: normalized.skills.map((s) => ({
+                candidateId,
+                skill: s.skill,
+                source: s.source,
+                confidence: s.confidence,
+            })),
+            skipDuplicates: true,
         });
     }
 
@@ -188,7 +193,7 @@ function buildMergeUpdate(
         if (normalized.currentTitle) data.currentTitle = normalized.currentTitle;
         if (normalized.currentCompany) data.currentCompany = normalized.currentCompany;
         if (normalized.location) data.location = normalized.location;
-        if (normalized.summary) data.summary = normalized.summary;  
+        if (normalized.summary) data.summary = normalized.summary;
         if (normalized.experienceYears !== undefined) data.experienceYears = normalized.experienceYears;
         if (normalized.educationLevel) data.educationLevel = normalized.educationLevel;
         data.profileTrustScore = Math.max(incomingTrust, existing.profileTrustScore);

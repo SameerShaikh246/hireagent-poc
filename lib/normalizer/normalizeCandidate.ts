@@ -1,14 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────
-// HireAgent — Candidate Normalizer (Phase 3)
-//
-// NormalizedCandidate structure. This is what Phase dedup and the DB
-// persistence layer will consume — neither of those need to know that PDL
-// calls it `full_name` and GitHub calls it `name`.
-//
-// This file does NOT touch the database — it's a pure mapping layer.
-// Persisting a NormalizedCandidate (look up existing identities, merge or
-// create, upsert skills/certifications).
-//─────────────────────────────────────────────────────────────────────────
+import { isPlausibleLocation } from "@/lib/search/locations";
 
 export type Provider = "PDL" | "GITHUB" | "TAVILY" | "EXA" | "SERPER" | "INTERNAL_DB";
 
@@ -25,9 +15,7 @@ export type SkillSource = "PDL_STRUCTURED" | "GITHUB_LANGUAGE" | "BIO_EXTRACTED"
 export type CertificationSource = "PDL" | "WEB_EXTRACTED";
 export type OpenToWorkStatus = "YES" | "NO" | "UNKNOWN";
 
-// Priority order for Phase 4 dedup lookups — check identities in this order
-// and merge into the first Candidate found; only create a new Candidate if
-// NONE of these match anything in CandidateIdentity.
+
 export const IDENTITY_PRIORITY: IdentityType[] = [
   "PDL_ID",
   "GITHUB_LOGIN",
@@ -66,7 +54,7 @@ export interface NormalizedCandidate {
   experienceYears?: number;
   educationLevel?: string;
 
-  // Phase 6 fields — always present on the shape, but null/UNKNOWN unless
+  // Fields — always present on the shape, but null/UNKNOWN unless
   // a provider actually supports them (see per-function notes below).
   estimatedSalaryMin?: number;
   estimatedSalaryMax?: number;
@@ -119,9 +107,6 @@ export function normalizeProfileUrl(url: string): string {
 
 const normalizeUrl = normalizeProfileUrl;
 
-// Explicit phrases only — per the demo decision, we never infer "open to
-// work" from anything other than a clear, direct statement (or GitHub's
-// `hireable` field, which is handled separately in normalizeGitHubCandidate).
 const OPEN_TO_WORK_PATTERNS: RegExp[] = [
   /open to work/i,
   /#opentowork/i,
@@ -150,7 +135,7 @@ function detectOpenToWorkFromText(text: string) {
 // MVP heuristic: looks for a LinkedIn-style "## Certifications" /
 // "## Licenses & Certifications" section (this is the format Tavily/Exa
 // raw_content came back in during validation) and pulls each line as a
-// candidate certification name. This is intentionally rough — Phase 6 will
+// candidate certification name. This is intentionally rough — This will
 // hand this section to Groq for structured, validated extraction (name vs.
 // issuer vs. date) instead of a flat line dump. Confidence is set low (0.4)
 // to reflect that.
@@ -296,20 +281,35 @@ interface GitHubProfileForNormalize {
   hireable?: boolean | null;
 }
 
+function mergeSkills(
+  primary: NormalizedSkill[],
+  detected: string[],
+): NormalizedSkill[] {
+  const seen = new Set(primary.map((s) => s.skill));
+  const extra: NormalizedSkill[] = detected
+    .filter((s) => !seen.has(s))
+    .map((skill) => ({ skill, source: "GROQ_ENRICHED" as SkillSource }));
+  return [...primary, ...extra];
+}
+
 export function normalizeGitHubCandidate(
   profile: GitHubProfileForNormalize,
   matchedSkills: string[],
-  confirmedLanguageSkills: string[], // subset of matchedSkills confirmed via a language: query match (higher trust)
+  confirmedLanguageSkills: string[],
+  detectedSkills: string[] = [],
 ): NormalizedCandidate {
   const identities: NormalizedIdentity[] = [
     { type: "GITHUB_LOGIN", value: profile.login.toLowerCase() },
     { type: "GITHUB_URL", value: normalizeUrl(profile.html_url) },
   ];
 
-  const skills: NormalizedSkill[] = matchedSkills.map((s) => ({
-    skill: s,
-    source: confirmedLanguageSkills.includes(s) ? "GITHUB_LANGUAGE" : "BIO_EXTRACTED",
-  }));
+  const skills = mergeSkills(
+    matchedSkills.map((s) => ({
+      skill: s,
+      source: (confirmedLanguageSkills.includes(s) ? "GITHUB_LANGUAGE" : "BIO_EXTRACTED") as SkillSource,
+    })),
+    detectedSkills,
+  );
 
   const certifications = extractCertificationsHeuristic(profile.bio ?? "");
 
@@ -371,6 +371,7 @@ interface WebCandidateForNormalize {
   source: "linkedin" | "github" | "portfolio" | "other";
   snippet: string;
   rawSnippet?: string;
+  detectedSkills?: string[];
   matchedSkills: string[];
   location?: string;
   provider: "tavily" | "exa" | "serper";
@@ -392,7 +393,7 @@ export function normalizeWebCandidate(candidate: WebCandidateForNormalize): Norm
     identities.push({ type: "LINKEDIN_URL", value: normalizeUrl(candidate.url) });
   } else if (candidate.source === "github") {
     identities.push({ type: "GITHUB_URL", value: normalizeUrl(candidate.url) });
-  } else if (candidate.source === "portfolio") {
+  } else if (candidate.url || candidate.source === "portfolio") {
     identities.push({ type: "PORTFOLIO_URL", value: normalizeUrl(candidate.url) });
   }
 
@@ -408,10 +409,10 @@ export function normalizeWebCandidate(candidate: WebCandidateForNormalize): Norm
     });
   }
 
-  const skills: NormalizedSkill[] = candidate.matchedSkills.map((s) => ({
-    skill: s,
-    source: "GROQ_ENRICHED",
-  }));
+  const skills = mergeSkills(
+    candidate.matchedSkills.map((s) => ({ skill: s, source: "GROQ_ENRICHED" as SkillSource })),
+    candidate.detectedSkills ?? [],
+  );
 
   const sourceText = `${candidate.rawTitle ?? ""}\n${candidate.rawSnippet || candidate.snippet || ""}`;
   const certifications = extractCertificationsHeuristic(candidate.rawSnippet || candidate.snippet || "");
@@ -421,7 +422,7 @@ export function normalizeWebCandidate(candidate: WebCandidateForNormalize): Norm
     fullName: candidate.name,
     currentTitle: candidate.title,
     currentCompany: candidate.company || undefined,
-    location: candidate.location,
+    location: isPlausibleLocation(candidate.location) ? candidate.location : undefined,
     summary: candidate.snippet,
 
     openToWork: otwSignal.status,

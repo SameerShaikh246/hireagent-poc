@@ -16,8 +16,9 @@ import { convertUsdToInr } from "@/lib/utils/currency";
 import { applyCandidateFilters, type CandidateFilters } from "@/lib/filters/applyCandidateFilters";
 import { withKeyFailover, getProviderKeys, getCentralGroqKeys, ProviderKeyError } from "@/lib/providerKeys";
 import { parseExperienceYears, parseEducation } from "@/lib/normalizer/parseProfileText";
-import { cleanLocations, expandLocation, expandLocations } from "@/lib/search/locations";
+import { cleanLocations, expandLocation, expandLocations, extractLocationFromText, isPlausibleLocation, extractLocationsFromJD } from "@/lib/search/locations";
 import { isPlausiblePersonName, nameFromLinkedInUrl, UNKNOWN_NAME } from "@/lib/normalizer/validateName";
+import { normalize, aliasesFor, canonicalSkill, matchSkillsInText, extractAllSkills, verifySkillsAgainstText } from "@/lib/skills/skillCatalog";
 
 // A search may fetch several pages (each a provider call + a Groq call + DB
 // writes), which can outlast the default serverless timeout on some hosts.
@@ -36,6 +37,7 @@ export interface WebCandidate {
   rawTitle?: string;                // Unmodified search-result title (pre-parse) — kept for Groq enrichment
   matchedSkills: string[];
   missingSkills: string[];
+  detectedSkills?: string[];
   relevanceScore: number;
   location?: string;
   experienceYears?: number;         // PDL-derived
@@ -89,9 +91,12 @@ export interface CandidateSearchResponse {
     mandatorySkills: string[];
     mustHaveSkills: string[];
     niceToHaveSkills: string[];
+    locations: string[];
   };
   suppressedByFreshness?: number; // count of candidates hidden by the 30-day freshness rule
   filteredOutByFilters?: number;  // count of candidates removed by recruiter-selected filters (Phase 8)
+  locations?: string[]; // extracted from the JD text, if any
+  appliedLocations?: string[];
 }
 
 
@@ -131,38 +136,6 @@ const SKILL_ALIASES: Record<string, string[]> = {
   "power bi": ["power bi", "powerbi"],
 };
 
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/[.\-_/]+/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function aliasesFor(skill: string): string[] {
-  const norm = normalize(skill);
-  for (const [canonical, variants] of Object.entries(SKILL_ALIASES)) {
-    if (variants.some((v) => normalize(v) === norm) || normalize(canonical) === norm) {
-      return [...new Set(variants.map(normalize).concat(normalize(canonical)))];
-    }
-  }
-  return [norm];
-}
-
-function canonicalSkill(skill: string): string {
-  const norm = normalize(skill);
-  for (const [canonical, variants] of Object.entries(SKILL_ALIASES)) {
-    if (variants.some((v) => normalize(v) === norm) || normalize(canonical) === norm) return canonical;
-  }
-  return norm;
-}
-
-function matchSkillsInText(text: string, skills: string[]): string[] {
-  const padded = ` ${normalize(text)} `;
-  const seen = new Set<string>();
-  for (const skill of skills) {
-    if (aliasesFor(skill).some((alias) => padded.includes(` ${alias} `))) {
-      seen.add(canonicalSkill(skill));
-    }
-  }
-  return [...seen];
-}
 
 // ─── Hard allow-list sanitizer ─────────────────────────────────────────────────
 // CRITICAL: this is the single source of truth that prevents any skill outside
@@ -228,6 +201,7 @@ interface ExtractedJDFields {
   mandatorySkills: string[];
   mustHaveSkills: string[];
   niceToHaveSkills: string[];
+  locations: string[];
 }
 
 async function extractJDFieldsForSearch(
@@ -242,7 +216,8 @@ Return ONLY valid JSON matching exactly this shape:
   "jobTitle": "string",
   "mandatorySkills": ["string"],
   "mustHaveSkills": ["string"],
-  "niceToHaveSkills": ["string"]
+  "niceToHaveSkills": ["string"],
+  "locations": ["string"]
 }
 
 Rules:
@@ -265,6 +240,15 @@ Rules:
 - Ignore technologies mentioned only in phrases such as "we use", "our stack includes",
   "you may work alongside", or "our engineering team uses", unless the candidate is
   explicitly expected to know them.
+- "locations": the candidate work locations the JD explicitly requires or prefers, taken ONLY from
+  an explicit location statement such as "Location:", "Required location:", "Preferred location:",
+  "Work location:", "Based in" or "Candidates must be in".
+- Return city names only (for example "Pune", "Hyderabad"). Correct obvious spelling mistakes
+  ("hydrabad" -> "Hyderabad", "banglore" -> "Bengaluru").
+- Split lists such as "pune, hydrabad" or "Pune / Mumbai" into separate entries. Maximum 5.
+- Do NOT include "Remote", "Hybrid", "Onsite", "India" on its own, or cities that appear only as
+  company headquarters, clients, offices of other teams or background information.
+- If the JD does not state a candidate location requirement, return an empty array.
 
 
 
@@ -310,6 +294,10 @@ Job description:
     niceToHaveSkills: Array.isArray(parsed.niceToHaveSkills)
       ? parsed.niceToHaveSkills.slice(0, 8).map(String)
       : [],
+    locations: cleanLocations([
+      ...(Array.isArray(parsed.locations) ? parsed.locations.map(String) : []),
+      ...extractLocationsFromJD(jdText),
+    ]),
   };
 }
 
@@ -321,11 +309,18 @@ interface EnrichedCandidate {
   summary: string;
   experienceYears?: number;
   matchedSkills: string[];
+  allSkills: string[];
   confidence: number;
   // Candidate quality gate
   isValidCandidate: boolean;
   nameConfidence: number;
   rejectionReason?: string;
+}
+
+function extractSkillsSource(c: WebCandidate): string {
+  const raw = `${c.rawTitle ?? ""}\n${c.rawSnippet || c.snippet || ""}`;
+  // Skip feed noise that names other people's skills.
+  return raw.split(/##\s*(?:Recent Activity|Activity|People Also Viewed|Publications)/i)[0].slice(0, 1800);
 }
 
 function extractProfileSource(candidate: WebCandidate): string {
@@ -365,6 +360,7 @@ async function enrichBatchWithGroq(
     profileText: extractProfileSource(candidate),
     url: candidate.url,
     matchedSkills: candidate.matchedSkills,
+    skillsText: extractSkillsSource(candidate),
   }));
 
   const prompt = `You are an expert technical recruiter and profile information normalizer.
@@ -417,6 +413,13 @@ IMPORTANT RULES:
 21. Evaluate EACH candidate independently based ONLY on their own profileText/title/company —
     never reuse the same matchedSkills, title, or summary across multiple candidates unless
     their source material genuinely supports identical output.
+22. "allSkills": list EVERY professional skill, technology, tool, language, framework or database
+     that skillsText explicitly states for THIS candidate (headline, skills, experience, description).
+     - Only skills literally present in skillsText. Do not infer related or implied skills.
+     - Ignore anything under activity feeds, "liked by", or other people's posts.
+     - Use short common names ("Python", "PostgreSQL", "AWS", "Django REST Framework").
+     - Max 25, no duplicates, no soft skills ("leadership", "management"), no job titles.
+     - This list is NOT limited to the JD skills in rule 15; rule 15 applies only to matchedSkills.
 
 The skills being searched for are:
 
@@ -435,6 +438,7 @@ Return exactly this structure:
       "summary": "string",
       "experienceYears": null,
       "matchedSkills": [],
+      "allSkills": [],
       "confidence": 0,
       "isValidCandidate": true,
       "nameConfidence": 0,
@@ -453,7 +457,7 @@ ${JSON.stringify(input, null, 2)}
       ...getCentralGroqKeys(),
       model: "openai/gpt-oss-120b",
       temperature: 0.1,
-      maxTokens: 3000, // a batch is ENRICH_BATCH_SIZE candidates now, not a whole page
+      maxTokens: 4000, // a batch is ENRICH_BATCH_SIZE candidates now, not a whole page
       reasoningFormat: "hidden",
       responseFormat: {
         type: "json_object",
@@ -518,6 +522,11 @@ ${JSON.stringify(input, null, 2)}
           allSkills,
         ),
 
+        allSkills: verifySkillsAgainstText(
+          Array.isArray(item.allSkills) ? item.allSkills.map(String) : [],
+          extractSkillsSource(candidates[item.index]),
+        ),
+
         confidence:
           typeof item.confidence === "number"
             ? Math.max(0, Math.min(1, item.confidence))
@@ -565,7 +574,7 @@ ${JSON.stringify(input, null, 2)}
           ...candidate,
 
           name:
-            enriched.nameConfidence >= 0.65 && isPlausiblePersonName(enriched.name)
+            enriched.nameConfidence >= 0.65 && isPlausiblePersonName(enriched.name, { requireFullName: true })
               ? enriched.name
               : candidate.name,
 
@@ -574,11 +583,13 @@ ${JSON.stringify(input, null, 2)}
 
           snippet: enriched.summary.slice(0, 350),
 
-          location: enriched.location,
+          location: isPlausibleLocation(enriched.location) ? enriched.location : candidate.location,
 
           experienceYears: candidate.experienceYears ?? enriched.experienceYears,
 
           matchedSkills,
+
+          detectedSkills: enriched.allSkills.length > 0 ? enriched.allSkills : candidate.detectedSkills,
 
           missingSkills,
         };
@@ -972,30 +983,27 @@ const NAME_RE = /^([A-Z][a-zÀ-ÿ'-]+(?:\s+[A-Z][a-zÀ-ÿ'-]+){1,3})\s*[-–|·]
 const PERSON_SEGMENT_RE = /^[A-Z][a-zÀ-ÿ'.-]+(?:\s+[A-Z][a-zÀ-ÿ'.-]+){1,3}$/;
 
 function extractName(title: string, snippet: string, url = ""): string {
-  // "Rahul Sharma Resume - Pune" -> "Rahul Sharma  - Pune"
-  const cleanTitle = title.replace(/\b(resume|curriculum vitae|cv|profile|portfolio)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const cleanTitle = title
+    .replace(/\.(pdf|docx?)\b/gi, " ")
+    .replace(/\b(resume|curriculum vitae|cv|profile|portfolio)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const ok = (n: string) => isPlausiblePersonName(n, { requireFullName: true });
 
   const m = cleanTitle.match(NAME_RE);
-  if (m && isPlausiblePersonName(m[1])) return m[1];
+  if (m && ok(m[1])) return m[1];
 
-  // Try each segment of the title: "Resume | Rahul Sharma | Pune"
   for (const part of cleanTitle.split(/\s*[|\-–—·•,]\s*/)) {
     const p = part.replace(/\(.*?\)/g, "").trim();
-    if (PERSON_SEGMENT_RE.test(p) && isPlausiblePersonName(p)) return p;
+    if (PERSON_SEGMENT_RE.test(p) && ok(p)) return p;
   }
 
-  const firstLine = snippet.split("\n")[0]?.trim() ?? "";
-  if (/^[A-Z][a-z]+ [A-Z][a-z]/.test(firstLine) && isPlausiblePersonName(firstLine.slice(0, 50))) {
-    return firstLine.slice(0, 50);
-  }
+  const firstLine = snippet.split("\n")[0]?.trim().slice(0, 50) ?? "";
+  if (/^[A-Z][a-z]+ [A-Z][a-z]/.test(firstLine) && ok(firstLine)) return firstLine;
 
   return nameFromLinkedInUrl(url) ?? UNKNOWN_NAME;
 }
 
-function extractLocation(snippet: string): string | undefined {
-  const m = snippet.match(/([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)+)/);
-  return m?.[1]?.slice(0, 50);
-}
 
 function webResultToCandidate(
   r: RawResult, i: number, allSkills: string[], provider: Provider
@@ -1012,12 +1020,13 @@ function webResultToCandidate(
     url: r.url,
     source,
     snippet: r.snippet.slice(0, 380),
-    rawSnippet: r.snippet.slice(0, 1000),
+    rawSnippet: r.snippet.slice(0, 3000),
+    detectedSkills: extractAllSkills(`${r.title}\n${r.snippet}`),
     rawTitle: r.title,
     matchedSkills,
     missingSkills,
     relevanceScore: scoreWebResult(matchedSkills, allSkills, source, r.snippet.length),
-    location: extractLocation(r.snippet),
+    location: extractLocationFromText(r.snippet),
     experienceYears: parseExperienceYears(r.snippet),
     education: parseEducation(r.snippet),
     provider: provider as "tavily" | "exa" | "serper",
@@ -1209,7 +1218,7 @@ async function dropSeenWebResults(
   try {
     const typeOf = (url: string) => {
       const src = detectSource(url);
-      return src === "linkedin" ? "LINKEDIN_URL" : src === "github" ? "GITHUB_URL" : src === "portfolio" ? "PORTFOLIO_URL" : null;
+      return src === "linkedin" ? "LINKEDIN_URL" : src === "github" ? "GITHUB_URL" : "PORTFOLIO_URL";
     };
     const byType = new Map<"LINKEDIN_URL" | "GITHUB_URL" | "PORTFOLIO_URL", string[]>();
     for (const r of results) {
@@ -1708,6 +1717,7 @@ async function runGitHubSearch(
           `${p.bio ?? ""}\nCompany: ${p.company ?? ""}\nLocation: ${p.location ?? ""}\n` +
           `Public repos: ${p.public_repos}\nFollowers: ${p.followers}`,
         rawTitle: p.bio || p.name || p.login,
+        detectedSkills: extractAllSkills(`${p.bio ?? ""} ${p.company ?? ""}`),
         matchedSkills,
         missingSkills,
         relevanceScore: score,
@@ -1894,6 +1904,7 @@ async function persistCandidates(candidates: WebCandidate[]): Promise<void> {
         candidate.rawProvider as any,
         candidate.matchedSkills,
         candidate.confirmedSkills ?? [],
+        candidate.detectedSkills ?? [],
       );
     } else {
       normalized = normalizeWebCandidate(candidate as any);
@@ -1973,6 +1984,7 @@ export async function POST(req: NextRequest) {
       jdMode = "structured",
       jdText = "",
       freshSearch = false,
+      ignoreJdLocations = false,
       filters,
       startPage = 0,
       excludeKeys = [],
@@ -1985,6 +1997,7 @@ export async function POST(req: NextRequest) {
       niceToHaveSkills: string[];
       jdMode?: JDMode;
       jdText?: string;
+      ignoreJdLocations?: boolean;
       freshSearch?: boolean;
       filters?: CandidateFilters;
       startPage?: number;
@@ -2040,6 +2053,7 @@ export async function POST(req: NextRequest) {
         mandatorySkills: finalMandatorySkills,
         mustHaveSkills: finalMustHaveSkills,
         niceToHaveSkills: finalNiceToHaveSkills,
+        locations: extracted.locations,
       };
     }
 
@@ -2054,7 +2068,15 @@ export async function POST(req: NextRequest) {
       );
 
     const allSkills = getAllJDSkills(finalMandatorySkills, finalMustHaveSkills, finalNiceToHaveSkills);
-    const searchLocations = cleanLocations(filters?.locations);
+    const clientLocations = cleanLocations(filters?.locations);
+    const jdLocations = jdMode === "freetext" && !ignoreJdLocations ? (extractedJD?.locations ?? []) : [];
+    const searchLocations = clientLocations.length ? clientLocations : jdLocations;
+
+    const effectiveFilters: CandidateFilters | undefined =
+      searchLocations.length || filters
+        ? { ...filters, locations: searchLocations.length ? searchLocations : undefined }
+        : undefined;
+
     const searchContextHash = buildSearchContextHash(finalJobTitle, allSkills, searchLocations);
     // Undefined on a "fresh search": every already-seen pre-check and exclusion
     // below keys off this, so leaving it unset turns the 30-day rule off.
@@ -2114,7 +2136,10 @@ export async function POST(req: NextRequest) {
         : rawItems;
 
       // DB rows are already saved; everything else must have a real person's name.
-      const items = notShown.filter((c) => c.provider === "db" || isPlausiblePersonName(c.name));
+      const WEB_PROVIDERS = ["tavily", "exa", "serper"];
+      const items = notShown.filter(
+        (c) => !WEB_PROVIDERS.includes(c.provider) || isPlausiblePersonName(c.name, { requireFullName: true }),
+      );
 
       let fresh = items;
       let suppressed = 0;
@@ -2153,7 +2178,8 @@ export async function POST(req: NextRequest) {
       target,
       maxPages,
       startPage: baseStartPage,
-      keyOf: (c) => c.candidateId ?? c.url ?? c.id,
+      keyOf: (c) =>
+        c.provider === "db" ? (c.candidateId ?? c.id) : (normalizeProfileUrl(c.url) || c.candidateId || c.id),
       stopWhen: () => !persistenceHealthy,
       processPage,
       fetchPage: async (page) => {
@@ -2204,6 +2230,8 @@ export async function POST(req: NextRequest) {
       provider,
       creditsUsed,
       warning,
+      extractedJD,
+      appliedLocations: searchLocations,
       nextPage,
       exhausted: gathered.exhausted,
       // Hidden as already-seen = skipped before enrichment + dropped after persisting.

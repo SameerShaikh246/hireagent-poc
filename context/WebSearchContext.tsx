@@ -7,9 +7,9 @@ interface RunSearchArgs {
     structuredJD: StructuredJD;
     jdMode: JDMode;
     jdText: string;
-    /** Phase 8 — recruiter-selected filters. Omit/undefined = no filtering. */
+    /** Recruiter-selected filters. Omit/undefined = no filtering. */
     filters?: CandidateFilters;
-    /** Phase 5 — bypass the 30-day "already seen" exclusion for this run. */
+    /** Bypass the 30-day "already seen" exclusion for this run. */
     freshSearch?: boolean;
     /** "Load more": add this batch to the list already on screen instead of replacing it. */
     append?: boolean;
@@ -110,6 +110,7 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                     jdMode,
                     jdText,
                     filters: effectiveFilters,
+                    ignoreJdLocations: locations !== undefined,
                     freshSearch: useFresh,
                     startPage,
                     excludeKeys,
@@ -131,16 +132,22 @@ export function WebSearchProvider({ children }: { children: ReactNode }) {
                 setResults(incoming);
                 setLastAddedCount(incoming.length);
             }
+            if (data.extractedJD) setExtractedJD(data.extractedJD);
+            else if (!append) setExtractedJD(null);
 
+            const applied: string[] = data.appliedLocations ?? effectiveLocations;
+            setSearchLocations(applied);
+            setLastFilters(
+                applied.length || effectiveFilters
+                    ? { ...effectiveFilters, locations: applied.length ? applied : undefined }
+                    : undefined,
+            );
             setTotalFound(data.totalFound);
             setSearchedAt(data.searchedAt);
             setCreditsUsed(data.creditsUsed);
-            setExtractedJD(data.extractedJD ?? null);
             setWarning(data.warning ?? "");
             setSuppressedByFreshness(data.suppressedByFreshness ?? 0);
             setFilteredOutByFilters(data.filteredOutByFilters ?? 0);
-            setLastFilters(effectiveFilters);
-            setSearchLocations(effectiveLocations);
             setLastRunFresh(useFresh);
             if (!append) setFreshMode(useFresh);   // keep the toggle in sync with Fresh search / Apply filters
             setNextPage(data.nextPage ?? 0);
